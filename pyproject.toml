@@ -1,0 +1,44 @@
+[project]
+name = "berana"
+version = "0.1.0"
+description = "Liturgical Ge'ez Translation & OCR Pipeline"
+requires-python = ">=3.10"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+# "Structuralist" Hybrid: Rigorous logic checks without the friction of ANN.
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # Pyflakes
+    "I",    # isort (import sorting)
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear (common bugs)
+    "SIM",  # flake8-simplify
+    "C90",  # McCabe complexity
+    "RUF",  # Ruff-specific rules
+    "PTH",  # flake8-use-pathlib (Rule 2: Modern Pythonic)
+    "D",    # Rule 4: Google-style Docstrings
+    "N",    # PEP8 Naming
+]
+
+ignore = [
+    "D100",   # Missing docstring in public module
+    "D104",   # Missing docstring in public package
+    "E501",   # Line length handled by formatter
+]
+
+[tool.ruff.lint.mccabe]
+# Functions with complexity > 10 must be refactored to maintain modularity.
+max-complexity = 10
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"

@@ -1,0 +1,43 @@
+# BERANA-TRANS: DEFINITIVE DEPENDENCY MANIFEST (FEBRUARY 2026)
+# Standardized to use >= for stability, with forced pins for model compatibility.
+# -----------------------------------------------------------------------------
+
+# 1. ORCHESTRATION & CONFIGURATION
+# High-performance, strictly-typed CLI and settings management.
+pydantic>=2.12.5
+pydantic-settings>=2.13.1
+typer>=0.24.0
+python-dotenv>=1.0.0
+
+# 2. DEVELOPMENT & LINTING
+# Zero-tolerance for technical debt via automated enforcement.
+ruff>=0.15.0
+pre-commit>=4.5.1
+
+# 3. LLM INFERENCE STACK
+# Local GGUF execution with GPU acceleration.
+huggingface-hub>=1.4.1
+# Note: llama-cpp-python is compiled with CUDA via setup.sh
+# Pinning to ensure compilation compatibility with CUDA 12.x
+# llama-cpp-python==0.3.16
+
+# 4. OCR & IMAGE PROCESSING (SURYA-OCR ECOSYSTEM)
+# Chosen over Tesseract for its superior native Layout Analysis.
+# These versions are synchronized with Surya 0.17.1's internal engine requirements.
+surya-ocr>=0.17.1
+torch>=2.7.0,<3.0.0            # Verified for CUDA 12.x support
+transformers>=4.56.1           # Required for vision transformer backbones
+einops>=0.8.1                  # Required for tensor manipulation in vision models
+pypdfium2==4.30.0              # STRICT: High-fidelity PDF-to-Image extraction
+opencv-python-headless==4.11.0.86 # STRICT: Internal vision pre-processing pin
+pillow>=10.2.0,<11.0.0         # Verified for layout parser binning
+numpy>=2.4.2
+
+# 5. DATA PIPELINE & WEB INTERFACE
+# Future-proofing for REST access to the OCR/Translation results.
+fastapi>=0.129.0
+uvicorn>=0.41.0
+pdf2image>=1.17.0
+filetype>=1.2.0
+platformdirs>=4.3.6
+tqdm>=4.67.3
