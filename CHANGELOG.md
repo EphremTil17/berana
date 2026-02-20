@@ -27,3 +27,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 - **Environment Isolation**: Enforced strict virtual environment boundaries to prevent system-level Python package contamination.
+## [0.2.0] - 2026-02-20
+
+### Added
+- **Geometric Data Contracts**: Implemented `schemas/ocr_models.py` with strict Pydantic v2 models for `BoundingBox`, `TextLine`, and `ColumnBlock`.
+- **Automated Language Identification**: Engineered a geometric clustering algorithm that automatically tags text columns as Ge'ez, Amharic, or English based on relative horizontal coordinates.
+- **Memory-Safe PDF Ingestion**: Implemented `modules/ocr_engine/pre_processors/pdf_to_image.py` utilizing a Python generator pattern to chunk large PDFs (50 pages/chunk), strictly adhering to the 8GB VRAM/64GB RAM constraints.
+- **Validation Suite**: Established `tests/test_ocr_schemas.py` and `tests/test_pdf_preprocessor.py` for comprehensive unit testing of the ingestion logic.
+
+### Changed
+- **Architectural Refinement**: Formalized the "Typed Schema" hand-off pattern between the future OCR engine and Translator modules to maintain structuralist decoupling.
+- **Enumerated Typings**: Migrated `LanguageTag` to use `enum.StrEnum` for improved runtime performance and serialization reliability.
+
+### Fixed
+- **Docstring Compliance**: Manually resolved 37+ `ruff` linting violations related to summary line spacing (D205) and multi-line summary formatting (D212) across the new module implementations.
+- **Mock Scope resolution**: Fixed Pytest path resolution issues in `test_pdf_preprocessor.py` by scoping patches to the internal `pdf2image` implementation rather than the local wrapper.
