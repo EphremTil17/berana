@@ -27,9 +27,36 @@ def run_benchmark_translation(
 @app.command(name="ingest")
 def run_ingest(
     pdf_path: str = typer.Argument(..., help="Path to the source liturgical PDF."),
+    chunk_size: int = typer.Option(
+        50, "--chunk-size", help="How many pages to load into RAM at once."
+    ),
+    dpi: int = typer.Option(300, "--dpi", help="Image processing resolution."),
 ) -> None:
-    """Run OCR and Layout Analysis on a raw PDF (Future)."""
-    log.info(f"Ingesting PDF from {pdf_path} into structural JSON... (Not Implemented)")
+    """Run OCR and Layout Analysis on a raw PDF, saving Geographic Language bounds to JSON."""
+    from pathlib import Path
+
+    from modules.ocr_engine.orchestrator import process_pdf_to_structural_json
+
+    source_path = Path(pdf_path)
+    output_dir = Path("output")
+
+    if not source_path.exists():
+        log.error(f"Ingest Failed: Source PDF '{source_path}' does not exist.")
+        raise typer.Exit(code=1)
+
+    log.info(f"Ingesting PDF from {source_path} into structural JSON... 🚀")
+
+    try:
+        final_file = process_pdf_to_structural_json(
+            pdf_path=source_path,
+            output_dir=output_dir,
+            chunk_size=chunk_size,
+            dpi=dpi,
+        )
+        log.info(f"✅ Ingestion Complete. Structural Map saved to: {final_file}")
+    except Exception as e:
+        log.error(f"❌ OCR Pipeline failed: {e}")
+        raise typer.Exit(code=1) from e
 
 
 @app.command(name="pipeline")
