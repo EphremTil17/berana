@@ -106,3 +106,14 @@ class PageLayout(BaseModel):
     columns: list[ColumnBlock] = Field(
         default_factory=list, description="The discrete language columns on this page"
     )
+    fallback_triggered: bool = Field(
+        False,
+        description="True if the primary projection engine failed and Surya Medians were used.",
+    )
+    uncertainty_score: float = Field(
+        0.0, description="Confidence/uncertainty metric for the layout slice quality."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Positional symmetry or projection warnings for human review.",
+    )
