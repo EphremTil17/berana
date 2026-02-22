@@ -216,6 +216,9 @@ def run_cli_entrypoint(n_gpu_layers: int, n_ctx: int, temperature: float) -> Non
         log.info(f"Model not found at {model_path}. Starting ingestion...")
         model_path = download_model(settings.MODEL_REPO, settings.MODEL_FILE)
 
+    import sys
+
     run_benchmark(
         model_path=model_path, n_gpu_layers=n_gpu_layers, n_ctx=n_ctx, temperature=temperature
     )
+    sys.exit(0)
