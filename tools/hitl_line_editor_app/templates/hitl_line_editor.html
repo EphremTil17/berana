@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Berana Line Adjuster</title>
+    <style>
+        body { font-family: sans-serif; margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; background: #1e1e1e; color: #fff;}
+        #sidebar { width: 300px; background: #252526; display: flex; flex-direction: column; border-right: 1px solid #333;}
+        #page-list { flex: 1; overflow-y: auto; padding: 10px; }
+        .page-item { padding: 8px; margin-bottom: 5px; cursor: pointer; border-radius: 4px; display: flex; justify-content: space-between;}
+        .page-item:hover { background: #2a2d2e; }
+        .page-item.active { background: #007acc; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; align-self: center;}
+        .verified { background: #4caf50; }
+        .unverified { background: #ff9800; }
+
+        #main { flex: 1; display: flex; flex-direction: column; position: relative; overflow: hidden;}
+        #toolbar { height: auto; min-height: 50px; background: #333333; display: flex; align-items: center; padding: 10px 20px; justify-content: space-between; flex-wrap: wrap; gap: 10px;}
+        .btn-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;}
+        button { padding: 8px 16px; background: #007acc; border: none; color: white; border-radius: 4px; cursor: pointer; font-size: 14px; white-space: nowrap;}
+        button:hover { background: #005f9e; }
+
+        #workspace { flex: 1; overflow: auto; position: relative; background: #111; display:flex; justify-content:center; align-items:flex-start;}
+
+        canvas { position: absolute; top:0; left:0; cursor: crosshair; }
+        img { display: block; position: absolute; top:0; left:0; }
+
+        #canvas-container { position: relative; transform-origin: top left; }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <h3 style="padding: 10px; margin:0; border-bottom: 1px solid #333;">Document Pages</h3>
+        <div id="page-list"></div>
+    </div>
+    <div id="main">
+        <div id="toolbar">
+            <span id="current-page-label" style="font-weight: bold;">Select a page</span>
+            <div class="btn-group">
+                <button onclick="zoomOut()">- Zoom</button>
+                <button onclick="zoomIn()">+ Zoom</button>
+                <button onclick="undo()" style="background:#e67e22;">Undo (Ctrl+Z)</button>
+                <button onclick="saveAndNext()" style="background: #4caf50;">Save & Next (Enter)</button>
+            </div>
+        </div>
+        <div id="workspace">
+            <div id="canvas-container">
+                <img id="bg-img" draggable="false" />
+                <canvas id="cvs"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let state = {};
+        let pages = [];
+        let currentPage = null;
+        let zoom = 0.5;
+
+        // Canvas Data
+        let leftLine = null;
+        let rightLine = null;
+        let historyStack = [];
+
+        const HANDLE_RADIUS = 6;
+        const HITBOX_RADIUS = 40; // generous grab area anywhere near the line
+        let dragging = null; // { line: 'left'|'right', pivot: 0|1 } -> 0 means bottom moves/top anchored, 1 means top moves/bottom anchored.
+
+        const cvs = document.getElementById('cvs');
+        const ctx = cvs.getContext('2d');
+        const bgImg = document.getElementById('bg-img');
+        const container = document.getElementById('canvas-container');
+
+        async function init() {
+            const res = await fetch('/api/state');
+            state = await res.json();
+            pages = Object.keys(state).sort((a, b) => a.localeCompare(b, undefined, {numeric: true}));
+            renderSidebar();
+            if (pages.length > 0) loadPage(pages[0]);
+        }
+
+        function renderSidebar() {
+            const list = document.getElementById('page-list');
+            list.innerHTML = '';
+            pages.forEach(p => {
+                const el = document.createElement('div');
+                el.className = 'page-item' + (p === currentPage ? ' active' : '');
+                el.onclick = () => loadPage(p);
+
+                const title = document.createElement('span');
+                title.innerText = p;
+
+                const dot = document.createElement('span');
+                dot.className = 'status-dot ' + (state[p].verified ? 'verified' : 'unverified');
+
+                el.appendChild(title);
+                el.appendChild(dot);
+                list.appendChild(el);
+            });
+            const active = list.querySelector('.active');
+            if(active) active.scrollIntoView({block: 'center', behavior: 'smooth'});
+        }
+
+        function loadPage(page_id) {
+            currentPage = page_id;
+            document.getElementById('current-page-label').innerText = page_id + " - " + (state[page_id].verified ? "✅ Verified" : "⚠️ Needs Review");
+            renderSidebar();
+
+            historyStack = [];
+            leftLine = state[page_id].left ? [...state[page_id].left] : null;
+            rightLine = state[page_id].right ? [...state[page_id].right] : null;
+
+            bgImg.onload = () => {
+                cvs.width = bgImg.naturalWidth;
+                cvs.height = bgImg.naturalHeight;
+                container.style.width = bgImg.naturalWidth + 'px';
+                container.style.height = bgImg.naturalHeight + 'px';
+
+                // If there are lines, ensure endpoints are safely inside the visual area
+                const margin = cvs.height * 0.05;
+                if(leftLine) { leftLine[1] = margin; leftLine[3] = cvs.height - margin; }
+                if(rightLine) { rightLine[1] = margin; rightLine[3] = cvs.height - margin; }
+
+                applyZoom();
+                draw();
+            };
+            bgImg.src = "/api/image/" + page_id;
+        }
+
+        function saveStateToHistory() {
+            historyStack.push({
+                left: leftLine ? [...leftLine] : null,
+                right: rightLine ? [...rightLine] : null
+            });
+            if(historyStack.length > 30) historyStack.shift();
+        }
+
+        function undo() {
+            if(historyStack.length > 0) {
+                const prevState = historyStack.pop();
+                leftLine = prevState.left ? [...prevState.left] : null;
+                rightLine = prevState.right ? [...prevState.right] : null;
+                draw();
+            }
+        }
+
+        function applyZoom() {
+            container.style.transform = `scale(${zoom})`;
+        }
+        function zoomIn() { zoom += 0.1; applyZoom(); }
+        function zoomOut() { zoom -= 0.1; if(zoom<0.1) zoom=0.1; applyZoom(); }
+
+        function draw() {
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+            if (leftLine) drawLine(leftLine, '#00bfff'); // Light blue
+            if (rightLine) drawLine(rightLine, '#ff4500'); // Orange/Red
+        }
+
+        function drawLine(l, color) {
+            let px1 = l[0], py1 = l[1], px2 = l[2], py2 = l[3];
+
+            let topX, topY = 0;
+            let btmX, btmY = cvs.height;
+            let dy = py2 - py1;
+            let dx = px2 - px1;
+
+            if (Math.abs(dy) > 1e-5) {
+                topX = px1 + (0 - py1) * dx / dy;
+                btmX = px1 + (cvs.height - py1) * dx / dy;
+            } else {
+                topX = px1; btmX = px2;
+                topY = py1; btmY = py2;
+            }
+
+            // Draw Main Infinite Line
+            ctx.beginPath();
+            ctx.moveTo(topX, topY);
+            ctx.lineTo(btmX, btmY);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 4; // Nice thick readable line
+            ctx.stroke();
+
+            // Draw Top and Bottom visible sphere handles
+            drawHandle(px1, py1, '#ffeb3b');
+            drawHandle(px2, py2, '#ffeb3b');
+        }
+
+        function drawHandle(x, y, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, HANDLE_RADIUS, 0, 2 * Math.PI);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+
+        function getMousePos(evt) {
+            const rect = cvs.getBoundingClientRect();
+            return {
+                x: (evt.clientX - rect.left) / zoom,
+                y: (evt.clientY - rect.top) / zoom
+            };
+        }
+
+        cvs.onmousedown = (e) => {
+            const pos = getMousePos(e);
+            dragging = getHitTarget(pos.x, pos.y);
+            if(dragging) {
+                saveStateToHistory();
+            }
+        };
+
+        cvs.onmousemove = (e) => {
+            const pos = getMousePos(e);
+
+            if (!dragging) {
+                // Dynamically change cursor if hovering over a line
+                const hit = getHitTarget(pos.x, pos.y);
+                cvs.style.cursor = hit ? 'move' : 'crosshair';
+                return;
+            }
+
+            let nx = Math.max(0, Math.min(pos.x, cvs.width));
+            const tgtLine = dragging.line === 'left' ? leftLine : rightLine;
+
+            // Organic Tilting:
+            // If dragging.pivot === 1 (we are grasping the top half), the bottom vertex (idx 2,3) acts as the anchor.
+            // If dragging.pivot === 0 (we are grasping the bottom half), the top vertex (idx 0,1) acts as the anchor.
+
+            if (dragging.pivot === 1) { // Grabbing TOP half
+                tgtLine[0] = nx; // Move top X
+            } else { // Grabbing BOTTOM half
+                tgtLine[2] = nx; // Move bottom X
+            }
+
+            draw();
+        };
+
+        cvs.onmouseup = () => { dragging = null; };
+        cvs.onmouseleave = () => { dragging = null; };
+
+        // Math helper to find distance from point to line segment
+        function distToSegmentSquared(p, v, w) {
+            let l2 = Math.pow(w.x - v.x, 2) + Math.pow(w.y - v.y, 2);
+            if (l2 === 0) return Math.pow(p.x - v.x, 2) + Math.pow(p.y - v.y, 2);
+            let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+            t = Math.max(0, Math.min(1, t));
+            return Math.pow(p.x - (v.x + t * (w.x - v.x)), 2) + Math.pow(p.y - (v.y + t * (w.y - v.y)), 2);
+        }
+
+        function getHitTarget(mx, my) {
+            const p = {x: mx, y: my};
+
+            const checkLine = (l) => {
+                if (!l) return null;
+                const top = {x: l[0], y: l[1]};
+                const btm = {x: l[2], y: l[3]};
+                const center_y = (l[1] + l[3]) / 2;
+
+                // Is mouse close to the line mathematically?
+                const distSq = distToSegmentSquared(p, top, btm);
+                if (distSq < HITBOX_RADIUS * HITBOX_RADIUS) {
+                    // It's a hit! Are we grabbing above or below the center of the document?
+                    return p.y < center_y ? 1 : 0; // 1 = Grab Top, 0 = Grab Bottom
+                }
+                return null;
+            };
+
+            let leftHit = checkLine(leftLine);
+            if (leftHit !== null) return {line: 'left', pivot: leftHit};
+
+            let rightHit = checkLine(rightLine);
+            if (rightHit !== null) return {line: 'right', pivot: rightHit};
+
+            return null;
+        }
+
+        async function saveAndNext() {
+            if(!currentPage) return;
+
+            const payload = {
+                left: leftLine,
+                right: rightLine,
+                verified: true
+            };
+
+            await fetch("/api/save/" + currentPage, {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(payload)
+            });
+
+            state[currentPage].left = leftLine;
+            state[currentPage].right = rightLine;
+            state[currentPage].verified = true;
+
+            const idx = pages.indexOf(currentPage);
+            if (idx < pages.length - 1) {
+                loadPage(pages[idx + 1]);
+            } else {
+                renderSidebar();
+                alert("You have reached the end of the document!");
+            }
+        }
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') saveAndNext();
+            if (e.key === 'z' && (e.ctrlKey || e.metaKey)) {
+                undo();
+                e.preventDefault();
+            }
+        });
+
+        init();
+    </script>
+</body>
+</html>

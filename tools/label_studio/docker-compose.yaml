@@ -1,0 +1,65 @@
+# -----------------------------------------------------------------------
+# Berana-Trans: Label Studio Visual Verification Stack
+# -----------------------------------------------------------------------
+# PURPOSE:
+#   Runs a local Label Studio instance for visually verifying the accuracy
+#   of our OpenCV Grid-Slicer on triple-column liturgical manuscripts.
+#
+# VOLUME MAPPING:
+#   The pipeline outputs page images to: ../../output/visuals/
+#   This compose file mounts that directory read-only into the container so
+#   Label Studio can serve them over HTTP without database uploads.
+#   Image URLs in our generated JSON tasks use: /data/local-files/?d=visuals/...
+#
+# REPRODUCIBILITY (PermissionError fix):
+#   Label Studio's internal process must run as the SAME UID as the host
+#   user who owns the mounted 'data/' directory. We achieve this by:
+#     1. setup.sh writes HOST_UID and HOST_GID to this .env file.
+#     2. The 'user:' directive below tells Docker to run the container process
+#        with those exact IDs, so it can freely write to the mounted volume.
+#   This eliminates the "[Errno 13] Permission denied: /label-studio/data/media"
+#   error that occurs when Docker defaults to running as UID 0 (root) or UID 1001.
+#
+# FIRST RUN:
+#   Ensure setup.sh has been run at least once to seed HOST_UID/HOST_GID.
+#   Then: docker compose up -d
+#   Dashboard: http://localhost:8080
+# -----------------------------------------------------------------------
+
+services:
+  label-studio:
+    image: heartexlabs/label-studio:latest
+    container_name: berana-label-studio
+    restart: unless-stopped
+
+    # Run the container process as the HOST user to prevent PermissionError
+    # on the mounted './data' volume. HOST_UID/HOST_GID are written by setup.sh.
+    user: "${HOST_UID}:${HOST_GID}"
+
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+
+    # These vars MUST be in 'environment:' not just env_file.
+    # Label Studio reads them at Django process startup before env_file is fully merged.
+    environment:
+      - LABEL_STUDIO_LOCAL_FILES_SERVING_ENABLED=true
+      - LABEL_STUDIO_LOCAL_FILES_DOCUMENT_ROOT=/label-studio/files
+      - LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
+      - LABEL_STUDIO_USERNAME=admin@berana.local
+      - LABEL_STUDIO_PASSWORD=berana_admin
+      - DJANGO_DB=sqlite
+    volumes:
+      # Mount the pipeline's visual output directory read-only.
+      # Images are organized per-PDF: output/visuals/<pdf_name>/page_NNN.jpg
+      - ../../output/visuals:/label-studio/files/visuals:ro
+
+      # Persist Label Studio's internal SQLite DB, uploads, and settings.
+      # This directory MUST be pre-created by setup.sh before first run.
+      - ./data:/label-studio/data
+
+    deploy:
+      resources:
+        limits:
+          memory: 2G

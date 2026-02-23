@@ -1,7 +1,24 @@
+#Environment variables
 venv/*
 env/*
-*/.env
+**/.env
 .venv/*
+
+#Models and outputs
 models/*
+output/*
+tools/label_studio/data/*
+!tools/label_studio/data/.env.example
+
+#Python cache
 **/__pycache__
 *.pyc
+data/*
+runs/*
+
+# Exclude YOLO downloads
+*.pt
+
+# Organized Weights & Golden Datasets (Exceptions)
+!models/layout/weights/berana_yolov8_divider_v13.pt
+.cache/*

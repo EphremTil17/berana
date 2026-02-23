@@ -16,28 +16,47 @@ pre-commit>=4.5.1
 
 # 3. LLM INFERENCE STACK
 # Local GGUF execution with GPU acceleration.
-huggingface-hub>=1.4.1
+huggingface-hub>=0.36.0,<1.0.0
 # Note: llama-cpp-python is compiled with CUDA via setup.sh
-# Pinning to ensure compilation compatibility with CUDA 12.x
+# Pinning to ensure compilation compatibility with CUDA 13.x
 # llama-cpp-python==0.3.16
 
 # 4. OCR & IMAGE PROCESSING (SURYA-OCR ECOSYSTEM)
 # Chosen over Tesseract for its superior native Layout Analysis.
 # These versions are synchronized with Surya 0.17.1's internal engine requirements.
+#
+# CRITICAL VERSION CONSTRAINTS (discovered Feb 2026):
+#   - torch: Must use CUDA 13.0 wheels to match system NVIDIA driver 580.97+.
+#            Install via: pip install torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+#   - transformers: Surya 0.17.x is INCOMPATIBLE with transformers>=5.0.0.
+#            The 5.x series removed 'pad_token_id' from SuryaDecoderConfig.
+#            Pin to 4.x until Surya releases a compatible update.
+#   - surya-ocr: v0.17+ uses class-based Predictor API (DetectionPredictor,
+#            LayoutPredictor, RecognitionPredictor). The old batch_* function API
+#            was fully removed.
+#
 surya-ocr>=0.17.1
-torch>=2.7.0,<3.0.0            # Verified for CUDA 12.x support
-transformers>=4.56.1           # Required for vision transformer backbones
-einops>=0.8.1                  # Required for tensor manipulation in vision models
-pypdfium2==4.30.0              # STRICT: High-fidelity PDF-to-Image extraction
+torch==2.10.0+cu130             # NATIVE: CUDA 13.0
+torchvision==0.25.0+cu130       # NATIVE: CUDA 13.0
+torchaudio==2.10.0+cu130        # NATIVE: CUDA 13.0
+transformers>=4.48.0,<5.0.0     # STRICT: Surya 0.17.x breaks on transformers 5.x
+einops>=0.8.1                   # Required for tensor manipulation in vision models
+pypdfium2==4.30.0               # STRICT: High-fidelity PDF-to-Image extraction
 opencv-python-headless==4.11.0.86 # STRICT: Internal vision pre-processing pin
-pillow>=10.2.0,<11.0.0         # Verified for layout parser binning
+scipy>=1.13.0                   # Required for 1D layout projection peaks
+pillow>=10.2.0,<11.0.0          # Verified for layout parser binning
 numpy>=2.4.2
+
+# 6. VISION AI & ANNOTATION
+# New stack for transitioning to YOLOv8-based layout analysis.
+ultralytics>=8.3.70
+label-studio-sdk>=1.0.1
 
 # 5. DATA PIPELINE & WEB INTERFACE
 # Future-proofing for REST access to the OCR/Translation results.
 fastapi>=0.129.0
 uvicorn>=0.41.0
-pdf2image>=1.17.0
+pdf2image>=1.17.0               # Requires system package: sudo apt install poppler-utils
 filetype>=1.2.0
 platformdirs>=4.3.6
 tqdm>=4.67.3
