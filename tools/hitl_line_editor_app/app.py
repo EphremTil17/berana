@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -65,5 +66,10 @@ def serve_ui() -> str:
 
 def run() -> None:
     """Run the HITL line editor development server."""
-    logger.info("Starting Hitl Line Editor on http://localhost:8000")
-    uvicorn.run("tools.hitl_line_editor:app", host="0.0.0.0", port=8000, reload=True)
+    host = os.getenv("HITL_HOST", "127.0.0.1")
+    port = int(os.getenv("HITL_PORT", "8000"))
+    reload_enabled = os.getenv("HITL_RELOAD", "true").lower() in {"1", "true", "yes", "on"}
+
+    logger.info(f"Starting Hitl Line Editor. Open in browser: http://localhost:{port}")
+    logger.info(f"Bind address: http://{host}:{port}")
+    uvicorn.run("tools.hitl_line_editor:app", host=host, port=port, reload=reload_enabled)
