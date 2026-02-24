@@ -15,7 +15,7 @@ By avoiding blind OCR on AI-generated layouts, we guarantee zero data contaminat
    - *Command:* `python berana.py layout-infer --pdf-path data/raw_pdfs/doc_001.Triple.pdf --start-page 101 --num-pages 360`
 2. **Review Environment (Label Studio):**
    - Import the generated JSON into Label Studio.
-   - Default file: `output/layout_auto/auto_labels_tasks.json`
+   - Default file pattern: `output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json`
    - Perform human review. Since the model has been highly trained, ~90% of the pages will only require a single click ("Submit").
    - For edge cases (e.g., missing dividers or skewed pages), physically drag or redraw the polygons.
 3. **The Gold Standard Export:**
@@ -23,19 +23,22 @@ By avoiding blind OCR on AI-generated layouts, we guarantee zero data contaminat
 
 ---
 
-## Step 2: The "Extract-Text" Pipeline (Precision OCR)
-**Goal:** Ingest the verified ZIP file, physically (or logically) isolate the columns based ONLY on human-confirmed coordinates, and feed them into the OCR character recognition.
+## Step 2: Precision Column Cropping (Current Implementation)
+**Goal:** Isolate Ge'ez, Amharic, and English strips from human-verified divider geometry before OCR.
 
-1. **Delete the Monolith:** Remove the previous `run_pipeline` command.
-2. **Create the Decoupled Command:**
-   - Build a new command: `berana.py extract-text --pdf-path doc_001.pdf --verified-labels final_export.zip`
-3. **Execution Flow inside `extract-text`:**
-   - **Ingest:** Unzip the Label Studio export and parse the exact `[x1, y1, x2, y2]` bounding coordinates for every single page.
-   - **Isolate:** Iterate through the PDF. Use the exact human coordinates to draw the 3 logical column zones.
-   - **Detect:** Run Surya Text Detection over the page to find individual text boundaries.
-   - **Map & Filter:** If a text box falls in Column 1, it is strictly assigned to Ge'ez. If it falls between the dividers, it is Amharic.
-   - **Recognize:** Pass these strictly separated and validated clusters into Surya's Text Recognition engine.
-   - **Output:** Generate the pristine `doc_001_structural.json` containing perfect translations grouped by language column.
+1. **Current Command:**
+   - `python berana.py crop-columns --pdf-path data/raw_pdfs/doc_001.Triple.pdf`
+2. **Execution Flow inside `crop-columns`:**
+   - **Source Resolution:** Prefer `data/layout_dataset/hitl_line_editor.sqlite3`; fallback to `output/hitl/ocr_column_map.json`.
+   - **Rectification:** Run structural deskew (`rotate` or `rotate+homography`) from divider vectors.
+   - **Isolate:** Export per-page strips under `output/ocr_artifacts/<doc_stem>_vNN/spliced/page_XXX/`.
+   - **Manifests:** Emit `cropping_manifest.json` and `quality_report.json`.
+3. **Stage Chaining:**
+   - The latest run pointer is persisted at `output/.registry/crop-columns/<doc_stem>.json`.
+   - Downstream OCR/training stages resolve this pointer automatically.
+
+### Historical Note
+The earlier planning name for this stage was `extract-text`. The current architecture intentionally decouples cropping from OCR, so `crop-columns` is now the canonical pre-OCR stage.
 
 ---
 

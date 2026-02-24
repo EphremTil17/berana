@@ -195,7 +195,7 @@ def export_images_for_labeling(
         logger.info(f"Exporting {num_pages} pages to {ls_img_dir} for Label Studio...")
 
     count = 0
-    for page_num, img in yield_pdf_pages(pdf_path, dpi=dpi, max_pages=num_pages):
+    for page_num, img in yield_pdf_pages(pdf_path, dpi=dpi, end_page=num_pages):
         filename = f"page_{page_num:03d}.jpg"
         dest = ls_img_dir / filename
         img.save(dest, "JPEG", quality=95)

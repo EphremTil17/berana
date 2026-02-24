@@ -20,11 +20,11 @@ def get_pdf_total_pages(pdf_path: Path) -> int:
 def build_target_pages(
     total_pages: int,
     start_page: int,
-    max_pages: int | None,
+    end_page: int | None,
     omit_pages: set[int],
 ) -> list[int]:
     """Build the exact list of page numbers to process."""
-    upper_bound = min(total_pages, max_pages) if max_pages is not None else total_pages
+    upper_bound = min(total_pages, end_page) if end_page is not None else total_pages
     if upper_bound < start_page:
         return []
     return [page for page in range(start_page, upper_bound + 1) if page not in omit_pages]
@@ -122,7 +122,7 @@ def yield_layout_infer_pages(
             chunk_size=chunk_size,
             dpi=dpi,
             start_page=range_start,
-            max_pages=range_end,
+            end_page=range_end,
             thread_count=4,
         )
         for page_num, image in _prefetch_iter(page_iter, buffer_size=8):

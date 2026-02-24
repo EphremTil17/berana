@@ -96,14 +96,23 @@ Tag: `v0.6.0` (`3a11788`)
 ### Changed
 - **Setup and Dependencies**: Updated `setup.sh`, `requirements.txt`, `pyproject.toml`, and `.gitignore` to support the HITL tooling and reproducible local operations.
 
-## [0.6.1] - 2026-02-23
-Tag: `v0.6.1` (`bfd8ebe`)
+## [0.7.0] - 2026-02-23
+Tag: `v0.7.0` (implied)
 
 ### Added
-- **Research Layout Report**: Added `docs/research/layout_analysis_report.md` to capture analysis outcomes and implementation decisions for research traceability.
-- **HITL Methodology Guide**: Added `docs/research/hitl_methodology.md` with procedural guidance for inference, manual verification, and extraction planning.
-- **Label Studio Workflow Guide**: Added `tools/label_studio/README.md` with exact local-files storage setup, JSON import method, and export format requirements.
+- **Geometric Splicing Engine**: Engineered a physics-verified "Geometry-First" cropping system in `modules/ocr_engine/pre_processors/splicing/` utilizing Homography and Rotation for sub-pixel deskewing.
+- **Precision Extraction Pipeline**: Implemented the first industrial-grade extraction path that consumes human-verified HITL coordinates to produce vertically-aligned language strips.
+- **Inverse Coordinate Remapping**: Developed a reversible transformation engine to map OCR results from rectified "strip-space" back to non-linear "page-space" coordinates.
+- **Run Registry & Stage Chaining**: Introduced `utils/run_registry.py` for immutable run histories (`doc_vNN`) and `.registry` pointers, enabling automatic upstream artifact resolution.
+- **High-Resolution Pipeline Verification**: Added a comprehensive test suite including `test_splicing_geometry.py`, `test_splicing_source_resolution.py`, and `test_run_registry.py`.
+- **Pipeline Activity Scaffolding**: Added `ocr` and `ocr-train` commands with standardized pagination and manifest-driven persistence.
 
 ### Changed
-- **Main Project Documentation**: Updated `README.md` with current inference defaults, output locations, and operational instructions.
-- **Release Narrative**: Updated `CHANGELOG.md` chronology to align entries with commit-tag history.
+- **Modular Orchestration Facade**: Refactored `orchestrator.py` into a thin facade with lazy function-level routing to specialized modules in `modules/ocr_engine/pipelines/`.
+- **CLI Signal-to-Noise Optimization**: Replaced per-page log spam with descriptive `tqdm` progress bars and concise post-run quality summaries.
+- **Command Nomenclature Refinement**: Renamed `extract-text` to `crop-columns` to accurately reflect its geometric-pass responsibilities in the multi-stage pipeline.
+- **Deterministic Source Discovery**: Implemented auto-discovery in `SplicingEngine` with strict precedence (SQLite Preferred > JSON Fallback).
+
+### Fixed
+- **Pathing Robustness**: Hardened registry and output pathing to use absolute project-root detection, ensuring pipeline stability across varying execution environments.
+- **Memory Management (Rule 5)**: Optimized the PDF ingestion loop to ensure VRAM/RAM stability during high-resolution Homography calculations.

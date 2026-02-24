@@ -17,7 +17,7 @@ def yield_pdf_pages(
     start_page: int = 1,
     thread_count: int | None = None,
     omit_pages: list[int] | None = None,
-    max_pages: int | None = None,
+    end_page: int | None = None,
 ) -> Generator[tuple[int, Image.Image], None, None]:
     """A memory-safe generator that processes a large PDF in chunks.
 
@@ -37,7 +37,7 @@ def yield_pdf_pages(
         info = pdfinfo_from_path(str(pdf_path))
         total_pages = int(info["Pages"])
         first_page = max(1, start_page)
-        last_page = min(total_pages, max_pages) if max_pages is not None else total_pages
+        last_page = min(total_pages, end_page) if end_page is not None else total_pages
     except Exception as e:
         logger.error(
             f"Failed to read PDF metadata for {pdf_path}. Ensure poppler-utils is installed."
@@ -46,7 +46,7 @@ def yield_pdf_pages(
 
     if last_page < first_page:
         logger.info(
-            f"No pages to process for {pdf_path} with start_page={first_page} and max_pages={max_pages}."
+            f"No pages to process for {pdf_path} with start_page={first_page} and end_page={end_page}."
         )
         return
 

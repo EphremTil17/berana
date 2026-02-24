@@ -31,10 +31,10 @@ Use this exact flow to avoid path/import mismatches:
    - Enable synchronization.
 4. Run auto-label generation from project root:
    - `python berana.py layout-infer --pdf-path data/raw_pdfs/doc_001.Triple.pdf`
-   - Default JSON output: `output/layout_auto/auto_labels_tasks.json`
+   - Default JSON output: `output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json`
 5. Import predictions/tasks:
    - In Label Studio project: `Import` -> `Upload Files`
-   - Select the generated JSON file (`output/layout_auto/auto_labels_tasks.json`)
+   - Select the generated JSON file (`output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json`)
    - Import type: **JSON task file** (not CSV, not raw images).
 6. Human review:
    - Validate/fix polygons for `divider_left` and `divider_right`.
@@ -50,7 +50,16 @@ Use the main pipeline to chop your raw PDF into a format Label Studio can digest
 ```bash
 # From the project root path
 source .venv/bin/activate
-python berana.py ingest --pdf-path data/raw_pdfs/my_custom_manuscript.pdf --slice-only --max-pages 30
+python berana.py ingest --pdf-path data/raw_pdfs/my_custom_manuscript.pdf --slice-only
+```
+
+Use current pagination flags:
+```bash
+python berana.py ingest \
+  --pdf-path data/raw_pdfs/my_custom_manuscript.pdf \
+  --slice-only \
+  --start-page 1 \
+  --end-page 30
 ```
 
 This command generates images into a mounted `berana_data` folder and creates an auto-import JSON. Follow standard Label Studio import procedures to map these tasks into your new project.
@@ -101,7 +110,7 @@ The most efficient way to scale from 30 pages to 500 pages of ground truth is **
 1. After Training v1 completes, its weights are placed in `runs/segment/runs/layout/my_custom_divider_v1/weights/best.pt`.
 2. Move those weights into `models/layout/weights/`.
 3. Run `python berana.py layout-infer` on another 50 unlabelled pages.
-   - This generates auto-label tasks at `output/layout_auto/auto_labels_tasks.json` by default.
+   - This generates auto-label tasks at `output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json` by default.
 4. Import those predictions back into Label Studio.
 5. Manually correct the AI's mistakes (which takes 10x less time than drawing polygons from scratch).
 6. Re-export and train v2.

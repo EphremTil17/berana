@@ -15,6 +15,7 @@ from modules.cli.layout_infer_runtime import (
     yield_layout_infer_pages,
 )
 from utils.logger import get_logger
+from utils.run_registry import next_versioned_dir, register_latest_run
 
 log = get_logger("LayoutCLI")
 
@@ -79,7 +80,7 @@ def run_layout_infer(
     output_dir: str = typer.Option(
         "output/layout_auto",
         "--output-dir",
-        help="Directory to write auto-label JSON output for Label Studio import.",
+        help="Base directory for versioned auto-label runs.",
     ),
     start_page: int = typer.Option(
         0, "--start-page", help="Page number to start from. Use 0 to start at the first page."
@@ -112,7 +113,7 @@ def run_layout_infer(
     source_path = ensure_pdf_exists(pdf_path, context_label="Layout Infer Failed")
     parsed_omit_pages = set(parse_omit_pages(omit_pages))
     physical_start_page = 1 if start_page <= 0 else start_page
-    max_pages = (
+    end_page = (
         None if num_pages is None else (physical_start_page + num_pages - 1)
     )  # yield_pdf_pages is 1-indexed and inclusive
 
@@ -125,7 +126,9 @@ def run_layout_infer(
         log.error("AI Auto-Labeling Failed: No trained weights found. Run 'train-layout' first.")
         raise typer.Exit(code=1)
 
-    ls_auto_dir = Path("output/visuals/layout_auto")
+    run_dir = next_versioned_dir(Path(output_dir), source_path.stem)
+    run_slug = run_dir.name
+    ls_auto_dir = Path("output/visuals/layout_auto") / run_slug
     ls_auto_dir.mkdir(parents=True, exist_ok=True)
 
     tasks: list[dict] = []
@@ -140,7 +143,7 @@ def run_layout_infer(
     target_pages = build_target_pages(
         total_pages=total_pdf_pages,
         start_page=physical_start_page,
-        max_pages=max_pages,
+        end_page=end_page,
         omit_pages=parsed_omit_pages,
     )
     expected_total = len(target_pages)
@@ -181,7 +184,7 @@ def run_layout_infer(
         dest = ls_auto_dir / filename
         img.save(dest, "JPEG", quality=95)
 
-        task = engine.generate_auto_labels(img, page_num, filename)
+        task = engine.generate_auto_labels(img, page_num, f"{run_slug}/{filename}")
         prediction_results = task.get("annotations", [{}])[0].get("result", [])
         scores = [
             float(item.get("score", 0.0))
@@ -216,7 +219,7 @@ def run_layout_infer(
 
     progress.close()
 
-    json_path = Path(output_dir) / "auto_labels_tasks.json"
+    json_path = run_dir / "auto_labels_tasks.json"
     json_path.parent.mkdir(parents=True, exist_ok=True)
     with json_path.open("w", encoding="utf-8") as file:
         json.dump(tasks, file, indent=2)
@@ -224,6 +227,22 @@ def run_layout_infer(
     log.info(
         f"✅ Auto-Labeling Complete. Processed {processed_count} pages. Import '{json_path}' into Label Studio."
     )
+    pointer = register_latest_run(
+        stage="layout-infer",
+        doc_stem=source_path.stem,
+        run_dir=run_dir,
+        artifacts={
+            "auto_labels_tasks": str(json_path),
+            "visuals_dir": str(ls_auto_dir),
+        },
+        metadata={
+            "start_page": physical_start_page,
+            "end_page": end_page,
+            "dpi": dpi,
+            "chunk_size": resolved_chunk_size,
+        },
+    )
+    log.info(f"Latest pointer updated: {pointer}")
     if processed_count > 0:
         overall_model_avg = model_score_total / model_scores_seen if model_scores_seen else 0.0
         page_avg_median = statistics.median(page_average_confidences)

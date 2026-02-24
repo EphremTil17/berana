@@ -3,7 +3,14 @@ import sys
 import typer
 
 from modules.cli.layout_commands import run_layout_infer, run_layout_prep, run_train_layout
-from modules.cli.ocr_commands import run_extract_text, run_ingest, run_poc_slicer
+from modules.cli.ocr_commands import (
+    run_crop_columns,
+    run_ingest,
+    run_ocr,
+    run_ocr_infer,
+    run_ocr_train,
+    run_poc_slicer,
+)
 from utils.logger import get_logger
 
 log = get_logger("Orchestrator")
@@ -34,7 +41,10 @@ app.command(name="poc-slicer")(run_poc_slicer)
 app.command(name="layout-prep")(run_layout_prep)
 app.command(name="train-layout")(run_train_layout)
 app.command(name="layout-infer")(run_layout_infer)
-app.command(name="extract-text")(run_extract_text)
+app.command(name="crop-columns")(run_crop_columns)
+app.command(name="ocr")(run_ocr)
+app.command(name="ocr-train")(run_ocr_train)
+app.command(name="ocr-infer")(run_ocr_infer)
 
 
 if __name__ == "__main__":

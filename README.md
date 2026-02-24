@@ -121,7 +121,8 @@ python berana.py benchmark-translation --help
    python berana.py ingest \
        --pdf-path "data/raw_pdfs/manuscript.pdf" \
        --slice-only \
-       --max-pages 50 \
+       --start-page 1 \
+       --end-page 50 \
        --omit-pages "1-8"
    ```
    **CLI Flags:**
@@ -131,8 +132,9 @@ python berana.py benchmark-translation --help
    | `--chunk-size` | INT (default: 50) | Pages loaded into RAM per batch |
    | `--dpi` | INT (default: 300) | Image processing resolution |
    | `--slice-only` | FLAG | Skip OCR, export Label Studio visualization JSON |
+   | `--start-page` | INT (default: 1) | Page number to begin processing from |
    | `--omit-pages` | TEXT | Pages to skip. Supports ranges: `"1,2,5-8"` |
-   | `--max-pages` | INT | Process only N pages (useful for testing) |
+   | `--end-page` | INT | Absolute last page to process (inclusive) |
 
 2. **Pipeline (Future):** The "Gold Standard" execution. Chains Ingest ➡️ Translation.
    ```bash
@@ -174,7 +176,7 @@ python berana.py layout-infer --pdf-path data/raw_pdfs/manuscript.pdf --start-pa
 ```
 
 By default, auto-label tasks are written to:
-`output/layout_auto/auto_labels_tasks.json`
+`output/layout_auto/<pdf_stem>_vNN/auto_labels_tasks.json`
 
 Import that JSON file into Label Studio for manual verification.
 For exact UI steps (Local Files storage path, JSON import mode, and YOLO export mode),
@@ -197,17 +199,46 @@ PYTHONPATH=. .venv/bin/python tools/hitl_line_editor.py
 *   **Database:** Modifies `data/layout_dataset/hitl_line_editor.sqlite3`.
 *   **Geometric Contract:** Records absolute `[x1, y1, x2, y2]` array properties for surgical cropping.
 
-### Phase 3: Text Extraction (Upcoming)
+### Phase 3: Column Cropping (Active)
 
 ```bash
-# Take the SQLite vectors, execute Affine perspective warping, and run Surya OCR
-python berana.py extract-text --pdf-path data/raw_pdfs/manuscript.pdf
+# Take verified dividers and export per-page column crops (no OCR at this stage)
+python berana.py crop-columns --pdf-path data/raw_pdfs/manuscript.pdf
 ```
-*(Produces final `document_structural.json` output).*
+*(Produces `cropping_manifest.json`, `quality_report.json`, and per-page spliced images.)*
+
+### Phase 4: OCR (Scaffold)
+
+```bash
+# OCR stage command scaffold (manifest-only until recognition implementation lands)
+python berana.py ocr --pdf-path data/raw_pdfs/manuscript.pdf
+```
+
+## 9. Run Registry & Versioning
+
+Berana writes versioned run directories (`<doc_stem>_vNN`) and updates latest pointers in:
+`output/.registry/<stage>/<doc_stem>.json`
+
+This provides reproducibility (immutable run history) and simple stage chaining (latest pointer lookup).
+
+### Current Stage Contracts (Operational)
+
+| Command | Primary Output Root | Versioned Run Dir | Primary Artifact(s) | Registry Stage |
+|---------|---------------------|-------------------|---------------------|----------------|
+| `layout-infer` | `output/layout_auto/` | `<doc>_vNN/` | `auto_labels_tasks.json` | `layout-infer` |
+| `ingest` | `output/ingest/` | `<doc>_vNN/` | `structural.json` or `label_studio_tasks.json` | `ingest` |
+| `poc-slicer` | `output/poc/` | `<doc>_vNN/` | `pipeline_debug/` visuals | `poc-slicer` |
+| `crop-columns` | `output/ocr_artifacts/` | `<doc>_vNN/` | `cropping_manifest.json`, `quality_report.json`, `spliced/page_XXX/*.png` | `crop-columns` |
+| `ocr` (scaffold) | `output/ocr_inference/` | `<doc>_vNN/` | `inference_manifest.json` | `ocr` |
+| `ocr-train` (scaffold) | `output/ocr_training/` | `<doc>_vNN/` | `training_manifest.json` | `ocr-train` |
+
+Notes:
+- `ocr-infer` is maintained as a compatibility alias and currently routes to `ocr` scaffold behavior.
+- Stage commands consume upstream artifacts through the latest-pointer registry to avoid brittle manual path passing.
 
 ---
 
-## 9. Data Safety & Local Developer Backups
+## 10. Data Safety & Local Developer Backups
 
 The HITL Pipeline utilizes an ACID-compliant local SQLite database to prevent catastrophic loss during multi-hour review sessions.
 
@@ -222,7 +253,7 @@ cp data/layout_dataset/verified_lines_state.json .git_exclude/backup/verified_li
 ```
 ---
 
-## 10. Performance Metrics & Weights
+## 11. Performance Metrics & Weights
 
 Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved via active learning and mosaic augmentations across over 100 epochs, early stopping at ~0.270 hours training time on a single RTX 3060 Ti.
 
@@ -236,7 +267,7 @@ Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved v
 
 This extraordinarily high fidelity restricts human intervention required in Phase 2 to roughly **1 page out of every 7**, typically related to massive physical tears in the original parchment.
 
-## 11. Architectural Philosophy: The "Tree-Branch" Pattern
+## 12. Architectural Philosophy: The "Tree-Branch" Pattern
 This codebase adheres to a strict **Modular Monolith** architecture.
 * **Rule of Modularity:** No monolithic code. Maximum 250 lines per file.
 * **Orchestrator Pattern:** Top-level files (e.g., `berana.py`, `modules/ocr_engine/orchestrator.py`) contain **zero** processing logic. They are strictly routers/callers that pass explicitly typed DataClasses between deeper modules.
