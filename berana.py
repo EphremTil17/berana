@@ -5,11 +5,10 @@ import typer
 from modules.cli.layout_commands import run_layout_infer, run_layout_prep, run_train_layout
 from modules.cli.ocr_commands import (
     run_crop_columns,
-    run_ingest,
+    run_layout_diagnostics,
     run_ocr,
     run_ocr_infer,
     run_ocr_train,
-    run_poc_slicer,
 )
 from utils.logger import get_logger
 
@@ -36,8 +35,7 @@ def run_benchmark_translation(
     benchmark_translation.run_cli_entrypoint(n_gpu_layers=gpu_layers, n_ctx=ctx, temperature=temp)
 
 
-app.command(name="ingest")(run_ingest)
-app.command(name="poc-slicer")(run_poc_slicer)
+app.command(name="layout-diagnostics")(run_layout_diagnostics)
 app.command(name="layout-prep")(run_layout_prep)
 app.command(name="train-layout")(run_train_layout)
 app.command(name="layout-infer")(run_layout_infer)

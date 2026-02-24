@@ -57,27 +57,26 @@ def find_column_canyons(
     return slice_lines, fallback_triggered, 0.0, warnings, img
 
 
-def generate_poc_debug_visuals(
+def generate_layout_diagnostics_visuals(
     img: Image.Image,
-    surya_bboxes: list[list[float]],
     slice_lines: list[int],
-    fallback_triggered: bool,
     page_num: int,
     output_base_dir: Path,
-    alignment_lines: list[list[int]] | None = None,
+    surya_bboxes: list[list[float]] | None = None,
 ):
-    """Draws visual proofs. Red = Surya Blocks, Blue = Slices."""
-    debug_dir = output_base_dir / "pipeline_debug"
-    overlay_dir = debug_dir / "visual_overlays"
-    columns_dir = debug_dir / "columns" / f"page_{page_num:03d}"
+    """Draw visual diagnostics. Red = text bboxes, blue = slice lines."""
+    overlay_dir = output_base_dir / "visual_overlays"
 
     overlay_dir.mkdir(parents=True, exist_ok=True)
-    columns_dir.mkdir(parents=True, exist_ok=True)
 
     cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     img_h, _img_w = cv_img.shape[:2]
 
-    # Draw simple slices for verification during transition
+    if surya_bboxes:
+        for bbox in surya_bboxes:
+            x1, y1, x2, y2 = (int(v) for v in bbox)
+            cv2.rectangle(cv_img, (x1, y1), (x2, y2), (0, 0, 255), 2)
+
     line_color = (255, 0, 0)
     for line_x in slice_lines:
         cv2.line(cv_img, (line_x, 0), (line_x, img_h), line_color, 4)

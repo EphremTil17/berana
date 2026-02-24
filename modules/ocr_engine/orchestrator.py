@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def run_poc_debug_pipeline(
+def run_layout_diagnostics_pipeline(
     pdf_path: Path,
     output_dir: Path,
     chunk_size: int = 50,
@@ -17,39 +17,14 @@ def run_poc_debug_pipeline(
     omit_pages: list[int] | None = None,
     end_page: int | None = None,
 ) -> Path:
-    """Route to PoC diagnostics pipeline."""
-    from modules.ocr_engine.pipelines.poc import run_poc_debug_pipeline as _run
+    """Route to layout diagnostics pipeline."""
+    from modules.ocr_engine.pipelines.diagnostics import run_layout_diagnostics_pipeline as _run
 
     return _run(
         pdf_path=pdf_path,
         output_dir=output_dir,
         chunk_size=chunk_size,
         dpi=dpi,
-        start_page=start_page,
-        omit_pages=omit_pages,
-        end_page=end_page,
-    )
-
-
-def process_pdf_to_structural_json(
-    pdf_path: Path,
-    output_dir: Path,
-    chunk_size: int = 50,
-    dpi: int = 300,
-    slice_only: bool = False,
-    start_page: int = 1,
-    omit_pages: list[int] | None = None,
-    end_page: int | None = None,
-) -> Path:
-    """Route to ingest pipeline."""
-    from modules.ocr_engine.pipelines.ingest import process_pdf_to_structural_json as _run
-
-    return _run(
-        pdf_path=pdf_path,
-        output_dir=output_dir,
-        chunk_size=chunk_size,
-        dpi=dpi,
-        slice_only=slice_only,
         start_page=start_page,
         omit_pages=omit_pages,
         end_page=end_page,

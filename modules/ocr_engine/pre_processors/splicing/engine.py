@@ -13,7 +13,7 @@ from .geometry import DividerLine, Point2D
 from .rectify import Rectifier
 
 log = get_logger("SplicingEngine")
-DEFAULT_HITL_DB_PATH = Path("data/layout_dataset/hitl_line_editor.sqlite3")
+DEFAULT_HITL_DB_PATH = Path("input/layout_dataset/hitl_line_editor.sqlite3")
 DEFAULT_JSON_MAP_PATH = Path("output/hitl/ocr_column_map.json")
 
 

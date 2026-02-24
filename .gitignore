@@ -4,17 +4,22 @@ env/*
 **/.env
 .venv/*
 
-#Models and outputs
+#Models and outputs or inputs
 models/*
 output/*
 tools/label_studio/data/*
 !tools/label_studio/data/.env.example
+input/raw_pdfs/*
+input/layout_dataset/*
 
 #Python cache
 **/__pycache__
 *.pyc
 data/*
 runs/*
+.pytest_cache
+.ruff_cache
+.cache
 
 # Exclude YOLO downloads
 *.pt

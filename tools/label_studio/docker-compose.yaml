@@ -6,10 +6,11 @@
 #   of our OpenCV Grid-Slicer on triple-column liturgical manuscripts.
 #
 # VOLUME MAPPING:
-#   The pipeline outputs page images to: ../../output/visuals/
+#   The pipeline outputs artifacts under: ../../output/
 #   This compose file mounts that directory read-only into the container so
 #   Label Studio can serve them over HTTP without database uploads.
-#   Image URLs in our generated JSON tasks use: /data/local-files/?d=visuals/...
+#   Image URLs in generated JSON tasks use:
+#   /data/local-files/?d=<path-relative-to-output-root>
 #
 # REPRODUCIBILITY (PermissionError fix):
 #   Label Studio's internal process must run as the SAME UID as the host
@@ -51,9 +52,11 @@ services:
       - LABEL_STUDIO_PASSWORD=berana_admin
       - DJANGO_DB=sqlite
     volumes:
-      # Mount the pipeline's visual output directory read-only.
-      # Images are organized per-PDF: output/visuals/<pdf_name>/page_NNN.jpg
-      - ../../output/visuals:/label-studio/files/visuals:ro
+      # Mount the entire output root read-only.
+      # Example image paths:
+      # - output/layout_prep/<run_slug>/visuals/page_NNN.jpg
+      # - output/layout_inference/<run_slug>/visuals/page_NNN.jpg
+      - ../../output:/label-studio/files:ro
 
       # Persist Label Studio's internal SQLite DB, uploads, and settings.
       # This directory MUST be pre-created by setup.sh before first run.

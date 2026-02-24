@@ -4,7 +4,9 @@ import numpy as np
 
 def calculate_optimal_slice_vector(polygon_points: np.ndarray) -> tuple[float, float, float, float]:
     """Fit a line-of-best-fit vector through polygon points."""
-    [vx, vy, x0, y0] = cv2.fitLine(polygon_points, cv2.DIST_L2, 0, 0.01, 0.01)
+    raw = cv2.fitLine(polygon_points, cv2.DIST_L2, 0, 0.01, 0.01)
+    # OpenCV returns shape (4, 1) float arrays; flatten to scalars for stable downstream math.
+    vx, vy, x0, y0 = np.asarray(raw, dtype=np.float64).reshape(-1)[:4]
     return float(vx), float(vy), float(x0), float(y0)
 
 

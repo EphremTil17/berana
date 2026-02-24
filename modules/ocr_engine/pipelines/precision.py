@@ -27,15 +27,21 @@ def run_precision_extraction_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     artifact_dir = next_versioned_dir(output_dir, pdf_path.stem)
-    spliced_dir = artifact_dir / "spliced"
+    data_dir = artifact_dir / "data"
+    visuals_dir = artifact_dir / "visuals"
+    meta_dir = artifact_dir / "meta"
+    spliced_dir = visuals_dir / "spliced"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    visuals_dir.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
     spliced_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Run artifact directory: {artifact_dir}")
     logger.info("--- Starting column cropping pass (OCR disabled) ---")
 
     splicing_engine = SplicingEngine()
 
-    manifest_output_path = artifact_dir / "cropping_manifest.json"
-    quality_report_path = artifact_dir / "quality_report.json"
+    manifest_output_path = data_dir / "cropping_manifest.json"
+    quality_report_path = data_dir / "quality_report.json"
 
     page_records: list[dict] = []
     quality_records: list[dict] = []

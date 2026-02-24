@@ -19,14 +19,14 @@ logger = get_logger("LineEditorState")
 
 def _resolve_image_path(base_name: str, source_dirs: list[Path]) -> Path | None:
     img_filename = f"{base_name}.jpg"
-    return next(
-        (
-            directory / img_filename
-            for directory in source_dirs
-            if (directory / img_filename).exists()
-        ),
-        None,
-    )
+    candidates: list[Path] = []
+    for directory in source_dirs:
+        for candidate in directory.rglob(img_filename):
+            if candidate.exists():
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def _build_page_data(img: np.ndarray, raw_lines: list[str]) -> dict[str, Any]:

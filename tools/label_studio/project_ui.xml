@@ -3,6 +3,7 @@
   <Header value="Page $page_num" />
   <View style="padding: 10px; margin-bottom: 20px; border: 1px solid #ddd; border-left: 5px solid #ff9800; background-color: #fff9f0;">
     <Text name="status_msg" value="$status" />
+    <Text name="confidence_rule" value="Warning threshold: avg confidence &lt; 30%" />
   </View>
 
   <!-- Image and Interactive Bounding Box Configs -->

@@ -37,7 +37,7 @@ berana/
 ├── docs/
 │   └── research/               # Methodology notes, layout analysis, and research artifacts
 ├── evals/                      # Translation benchmark runners and evaluation support
-├── input/                      # Source text assets, glossary, and user-provided inputs
+├── input/                      # User-provided source assets (raw PDFs, layout datasets, glossary)
 ├── models/
 │   └── layout/
 │       └── weights/            # Trained divider model weights for layout inference
@@ -107,20 +107,19 @@ python berana.py --help
 ### Sub-Command Help
 Each command has its own isolated help menu:
 ```bash
-python berana.py ingest --help
+python berana.py layout-diagnostics --help
 python berana.py benchmark-translation --help
 ```
 
 ### The Three Phases of Berana
-1. **Ingest (Active Development):** Extracts structural JSON from triple-column PDFs using Surya OCR.
+1. **Layout Diagnostics (Active Development):** Validates Surya line detection + YOLO divider slicing with visual overlays for rapid debugging.
    ```bash
-   # Full ingest
-   python berana.py ingest --pdf-path "data/raw_pdfs/manuscript.pdf"
+   # Full diagnostics pass
+   python berana.py layout-diagnostics --pdf-path "input/raw_pdfs/manuscript.pdf"
 
-   # Grid-slice only (exports Label Studio JSON for visual verification)
-   python berana.py ingest \
-       --pdf-path "data/raw_pdfs/manuscript.pdf" \
-       --slice-only \
+   # Paginated diagnostics
+   python berana.py layout-diagnostics \
+       --pdf-path "input/raw_pdfs/manuscript.pdf" \
        --start-page 1 \
        --end-page 50 \
        --omit-pages "1-8"
@@ -131,7 +130,6 @@ python berana.py benchmark-translation --help
    | `--pdf-path` | TEXT (required) | Path to the source liturgical PDF |
    | `--chunk-size` | INT (default: 50) | Pages loaded into RAM per batch |
    | `--dpi` | INT (default: 300) | Image processing resolution |
-   | `--slice-only` | FLAG | Skip OCR, export Label Studio visualization JSON |
    | `--start-page` | INT (default: 1) | Page number to begin processing from |
    | `--omit-pages` | TEXT | Pages to skip. Supports ranges: `"1,2,5-8"` |
    | `--end-page` | INT | Absolute last page to process (inclusive) |
@@ -156,8 +154,6 @@ When the pipeline runs for the first time, Surya will automatically download mod
 | `LayoutPredictor` (Foundation) | ~1.5 GB | Identifies structural layout (columns, headers) |
 | `RecognitionPredictor` (Foundation) | ~1.8 GB | Reads actual characters from detected regions |
 
-> **Note:** When using `--slice-only`, the RecognitionPredictor is **not loaded**, saving ~1.8GB of VRAM.
-
 ## 8. Layout Automation & HITL Verification (The "Gutter Vision" Pipeline)
 
 To solve the "Semantic Bleeding" problem where traditional generic OCR bleeds Amharic into English, Berana employs a custom **YOLOv8-Segmentation** layout engine coupled with an SQLite-backed HITL (Human-In-The-Loop) Web Editor.
@@ -169,18 +165,18 @@ Predict column trajectories (gutters) over the entire document utilizing our spe
 
 ```bash
 # 1. Prepare raw samples from a complex PDF
-python berana.py layout-prep --pdf-path data/raw_pdfs/manuscript.pdf --num-pages 20
+python berana.py layout-prep --pdf-path input/raw_pdfs/manuscript.pdf --num-pages 20
 
 # 2. Run vision inference to generate bounding masks across the entire manuscript
-python berana.py layout-infer --pdf-path data/raw_pdfs/manuscript.pdf --start-page 0 --num-pages 456
+python berana.py layout-infer --pdf-path input/raw_pdfs/manuscript.pdf --start-page 0 --num-pages 456
 ```
 
 By default, auto-label tasks are written to:
-`output/layout_auto/<pdf_stem>_vNN/auto_labels_tasks.json`
+`output/layout_inference/<pdf_stem>_vNN/data/auto_labels_tasks.json`
 
-Import that JSON file into Label Studio for manual verification.
-For exact UI steps (Local Files storage path, JSON import mode, and YOLO export mode),
-see `tools/label_studio/README.md` section **"Exact Label Studio Workflow (Import/Export Contract)"**.
+Import that JSON into Label Studio for manual verification.
+For exact Local Files path configuration, import/export procedure, and troubleshooting,
+see [tools/label_studio/README.md](tools/label_studio/README.md).
 
 ### Phase 2: Human Verification (The HITL Editor)
 
@@ -196,22 +192,22 @@ PYTHONPATH=. .venv/bin/python tools/hitl_line_editor.py
 ```
 *(Open your browser to `http://localhost:8000`)*
 
-*   **Database:** Modifies `data/layout_dataset/hitl_line_editor.sqlite3`.
+*   **Database:** Modifies `input/layout_dataset/hitl_line_editor.sqlite3`.
 *   **Geometric Contract:** Records absolute `[x1, y1, x2, y2]` array properties for surgical cropping.
 
 ### Phase 3: Column Cropping (Active)
 
 ```bash
 # Take verified dividers and export per-page column crops (no OCR at this stage)
-python berana.py crop-columns --pdf-path data/raw_pdfs/manuscript.pdf
+python berana.py crop-columns --pdf-path input/raw_pdfs/manuscript.pdf
 ```
-*(Produces `cropping_manifest.json`, `quality_report.json`, and per-page spliced images.)*
+*(Produces `data/cropping_manifest.json`, `data/quality_report.json`, and per-page spliced images in `visuals/spliced/`.)*
 
 ### Phase 4: OCR (Scaffold)
 
 ```bash
 # OCR stage command scaffold (manifest-only until recognition implementation lands)
-python berana.py ocr --pdf-path data/raw_pdfs/manuscript.pdf
+python berana.py ocr --pdf-path input/raw_pdfs/manuscript.pdf
 ```
 
 ## 9. Run Registry & Versioning
@@ -225,12 +221,12 @@ This provides reproducibility (immutable run history) and simple stage chaining 
 
 | Command | Primary Output Root | Versioned Run Dir | Primary Artifact(s) | Registry Stage |
 |---------|---------------------|-------------------|---------------------|----------------|
-| `layout-infer` | `output/layout_auto/` | `<doc>_vNN/` | `auto_labels_tasks.json` | `layout-infer` |
-| `ingest` | `output/ingest/` | `<doc>_vNN/` | `structural.json` or `label_studio_tasks.json` | `ingest` |
-| `poc-slicer` | `output/poc/` | `<doc>_vNN/` | `pipeline_debug/` visuals | `poc-slicer` |
-| `crop-columns` | `output/ocr_artifacts/` | `<doc>_vNN/` | `cropping_manifest.json`, `quality_report.json`, `spliced/page_XXX/*.png` | `crop-columns` |
-| `ocr` (scaffold) | `output/ocr_inference/` | `<doc>_vNN/` | `inference_manifest.json` | `ocr` |
-| `ocr-train` (scaffold) | `output/ocr_training/` | `<doc>_vNN/` | `training_manifest.json` | `ocr-train` |
+| `layout-prep` | `output/layout_prep/` | `<doc>_vNN/` | `visuals/page_XXX.jpg` | `layout-prep` |
+| `layout-infer` | `output/layout_inference/` | `<doc>_vNN/` | `data/auto_labels_tasks.json`, `visuals/page_XXX.jpg` | `layout-infer` |
+| `layout-diagnostics` | `output/layout_diagnostics/` | `<doc>_vNN/` | `visuals/visual_overlays/*.jpg` | `layout-diagnostics` |
+| `crop-columns` | `output/column_crops/` | `<doc>_vNN/` | `data/cropping_manifest.json`, `data/quality_report.json`, `visuals/spliced/page_XXX/*.png` | `crop-columns` |
+| `ocr` (scaffold) | `output/ocr_runs/inference/` | `<doc>_vNN/` | `data/inference_manifest.json` | `ocr` |
+| `ocr-train` (scaffold) | `output/ocr_runs/training/` | `<doc>_vNN/` | `data/training_manifest.json` | `ocr-train` |
 
 Notes:
 - `ocr-infer` is maintained as a compatibility alias and currently routes to `ocr` scaffold behavior.
@@ -248,8 +244,8 @@ All proprietary tracking/state occurs locally inside `.git_exclude/` to prevent 
 ```bash
 # Back up your verification progress (both SQLite and JSON states) without hitting Version Control
 mkdir -p .git_exclude/backup
-cp data/layout_dataset/hitl_line_editor.sqlite3 .git_exclude/backup/hitl_line_editor_backup.sqlite3
-cp data/layout_dataset/verified_lines_state.json .git_exclude/backup/verified_lines_state_backup.json
+cp input/layout_dataset/hitl_line_editor.sqlite3 .git_exclude/backup/hitl_line_editor_backup.sqlite3
+cp input/layout_dataset/verified_lines_state.json .git_exclude/backup/verified_lines_state_backup.json
 ```
 ---
 

@@ -26,43 +26,52 @@ Use this exact flow to avoid path/import mismatches:
 1. Open Label Studio at `http://localhost:8080` and create/select your project.
 2. In project settings, set the labeling Setup to --> Custom Template --> Code = `tools/label_studio/project_ui.xml`.
 3. Configure **Cloud Storage -> Local Files**:
+   - UI path: `Project -> Settings -> Cloud Storage -> Add Source Storage -> Local Files`
    - Storage type: `Local files`
-   - Absolute local path inside container: `/label-studio/files/visuals`
-   - Enable synchronization.
-4. Run auto-label generation from project root:
-   - `python berana.py layout-infer --pdf-path data/raw_pdfs/doc_001.Triple.pdf`
-   - Default JSON output: `output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json`
-5. Import predictions/tasks:
+   - Absolute local path must be a subdirectory of `/label-studio/files` (cannot be the root itself).
+   - Inference path pattern: `/label-studio/files/layout_inference/<doc_stem>_vNN/visuals`
+   - Prep path pattern: `/label-studio/files/layout_prep/<doc_stem>_vNN/visuals`
+   - Click Sync after setting/changing the path.
+4. (Optional but recommended) Generate raw page images for manual tasking:
+   - `python berana.py layout-prep --pdf-path input/raw_pdfs/doc_001.Triple.pdf`
+   - Default image output: `output/layout_prep/<doc_stem>_vNN/visuals`
+5. Run auto-label generation from project root:
+   - `python berana.py layout-infer --pdf-path input/raw_pdfs/doc_001.Triple.pdf`
+   - Default JSON output: `output/layout_inference/<doc_stem>_vNN/data/auto_labels_tasks.json`
+6. Import predictions/tasks:
    - In Label Studio project: `Import` -> `Upload Files`
-   - Select the generated JSON file (`output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json`)
+   - Select the generated JSON file: `output/layout_inference/<doc_stem>_vNN/data/auto_labels_tasks.json`
    - Import type: **JSON task file** (not CSV, not raw images).
-6. Human review:
+   - If images do not load:
+     - Ensure storage path run/version matches the JSON run/version.
+     - Re-sync Cloud Storage.
+7. Human review:
    - Validate/fix polygons for `divider_left` and `divider_right`.
-7. Export for training:
+8. Export for training:
    - `Export` -> format: **YOLO (Polygon)**
    - Choose **YOLO (without images)** to avoid duplicate image payloads and keep repo workflows lean.
-   - Place resulting ZIP under `data/layout_dataset/` for ingestion/training scripts.
+   - Place resulting ZIP under `input/layout_dataset/` for ingestion/training scripts.
 
-## 2. Ingest "Unseen" Baseline Data
+## 2. Generate Label Studio Inputs
 
-Use the main pipeline to chop your raw PDF into a format Label Studio can digest, but use the `--slice-only` flag so it skips OCR extraction.
+Use layout-prep and layout-infer as the canonical path for Label Studio task generation.
 
 ```bash
-# From the project root path
+# From project root
 source .venv/bin/activate
-python berana.py ingest --pdf-path data/raw_pdfs/my_custom_manuscript.pdf --slice-only
+python berana.py layout-prep --pdf-path input/raw_pdfs/my_custom_manuscript.pdf
+python berana.py layout-infer --pdf-path input/raw_pdfs/my_custom_manuscript.pdf
 ```
 
-Use current pagination flags:
+Use pagination flags as needed:
 ```bash
-python berana.py ingest \
-  --pdf-path data/raw_pdfs/my_custom_manuscript.pdf \
-  --slice-only \
+python berana.py layout-infer \
+  --pdf-path input/raw_pdfs/my_custom_manuscript.pdf \
   --start-page 1 \
   --end-page 30
 ```
 
-This command generates images into a mounted `berana_data` folder and creates an auto-import JSON. Follow standard Label Studio import procedures to map these tasks into your new project.
+This creates auto-label tasks in `output/layout_inference/<doc_stem>_vNN/data/auto_labels_tasks.json` and source images in `output/layout_inference/<doc_stem>_vNN/visuals`.
 
 ## 3. Labeling the "Golden Target"
 
@@ -76,15 +85,16 @@ Label at least **30 distinct layout pages** to acquire enough geometric variance
 
 ## 4. Export & Prep the YOLO Dataset
 
-Once manual labeling is complete, export the project from Label Studio in the **YOLO (Polygon)** format. Move the `.zip` file into `data/layout_dataset/`.
+Once manual labeling is complete, export the project from Label Studio in the **YOLO (Polygon)** format. Move the `.zip` file into `input/layout_dataset/`.
 
 Next, run our data ingestion tool to format the raw YOLO export into a strict ultrasonic-compliant training schema:
 
 ```bash
 python tools/ingest_labels.py \
-    --zip "data/layout_dataset/project-export.zip" \
-    --images-dir "data/layout_dataset/images" \
-    --output "data/layout_dataset/yolo_train_v1"
+    --zip-file "input/layout_dataset/project-export.zip" \
+    --output-dir "input/layout_dataset/yolo_train_v1" \
+    --source-images "output/layout_inference/<doc_stem>_vNN/visuals" \
+    --source-images "output/layout_prep/<doc_stem>_vNN/visuals"
 ```
 
 ## 5. Train the Model
@@ -94,7 +104,7 @@ Now you will execute the training using the YOLOv8-Segmentation backend with hea
 ```bash
 # Make sure your VENV is active
 python berana.py train-layout \
-    --data-yaml "data/layout_dataset/yolo_train_v1/dataset.yaml" \
+    --data-yaml "input/layout_dataset/yolo_train_v1/dataset.yaml" \
     --epochs 100 \
     --img-size 1024 \
     --batch-size 16 \
@@ -110,7 +120,7 @@ The most efficient way to scale from 30 pages to 500 pages of ground truth is **
 1. After Training v1 completes, its weights are placed in `runs/segment/runs/layout/my_custom_divider_v1/weights/best.pt`.
 2. Move those weights into `models/layout/weights/`.
 3. Run `python berana.py layout-infer` on another 50 unlabelled pages.
-   - This generates auto-label tasks at `output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json` by default.
+   - This generates auto-label tasks at `output/layout_inference/<doc_stem>_vNN/data/auto_labels_tasks.json` by default.
 4. Import those predictions back into Label Studio.
 5. Manually correct the AI's mistakes (which takes 10x less time than drawing polygons from scratch).
 6. Re-export and train v2.

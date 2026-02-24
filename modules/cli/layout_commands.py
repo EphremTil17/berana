@@ -24,7 +24,7 @@ def run_layout_prep(
     pdf_path: Annotated[
         str, typer.Option("--pdf-path", help="Path to the PDF to extract labeling samples from.")
     ],
-    output_dir: str = typer.Option("data/layout_dataset", "--output-dir"),
+    output_dir: str = typer.Option("output/layout_prep", "--output-dir"),
     num_pages: int | None = typer.Option(
         None,
         "--num-pages",
@@ -36,22 +36,39 @@ def run_layout_prep(
     log.info("Initializing layout-prep dependencies...")
     from modules.ocr_engine.layout.yolo_engine import export_images_for_labeling
 
+    source_path = ensure_pdf_exists(pdf_path, context_label="Layout Prep Failed")
+    run_dir = next_versioned_dir(Path(output_dir), source_path.stem)
+    visuals_dir = run_dir / "visuals"
+    meta_dir = run_dir / "meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
+
+    logging.getLogger("PDFtoImage").setLevel(logging.WARNING)
     log.info("Preparing page images for Label Studio...")
     try:
-        export_images_for_labeling(
-            pdf_path=Path(pdf_path), output_dir=Path(output_dir), num_pages=num_pages, dpi=dpi
+        exported_count = export_images_for_labeling(
+            pdf_path=source_path, output_dir=visuals_dir, num_pages=num_pages, dpi=dpi
         )
     except PermissionError as exc:
         log.error(str(exc))
         raise typer.Exit(code=1) from exc
 
+    pointer = register_latest_run(
+        stage="layout-prep",
+        doc_stem=source_path.stem,
+        run_dir=run_dir,
+        artifacts={"visuals_dir": str(visuals_dir)},
+        metadata={"num_pages": num_pages, "dpi": dpi, "exported_count": exported_count},
+    )
+    log.info(f"Latest pointer updated: {pointer}")
+
     log.info(
-        "Ready for Labeling! Add local storage path '/berana_data/visuals/layout_training' in Label Studio settings."
+        "Ready for Labeling! Point Label Studio local-files path to this run visuals directory: "
+        f"/label-studio/files/layout_prep/{run_dir.name}/visuals (host: {visuals_dir})"
     )
 
 
 def run_train_layout(
-    data_yaml: str = typer.Option("data/layout_dataset/dataset.yaml", "--data"),
+    data_yaml: str = typer.Option("input/layout_dataset/dataset.yaml", "--data"),
     epochs: int = typer.Option(100, "--epochs"),
     imgsz: int = typer.Option(1024, "--imgsz"),
 ) -> None:
@@ -78,7 +95,7 @@ def run_layout_infer(
         str, typer.Option("--pdf-path", help="Path to the PDF to run auto-labeling on.")
     ],
     output_dir: str = typer.Option(
-        "output/layout_auto",
+        "output/layout_inference",
         "--output-dir",
         help="Base directory for versioned auto-label runs.",
     ),
@@ -127,9 +144,12 @@ def run_layout_infer(
         raise typer.Exit(code=1)
 
     run_dir = next_versioned_dir(Path(output_dir), source_path.stem)
-    run_slug = run_dir.name
-    ls_auto_dir = Path("output/visuals/layout_auto") / run_slug
-    ls_auto_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = run_dir / "data"
+    visuals_dir = run_dir / "visuals"
+    meta_dir = run_dir / "meta"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    visuals_dir.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
 
     tasks: list[dict] = []
     if num_pages is None:
@@ -152,7 +172,7 @@ def run_layout_infer(
         if chunk_size is not None
         else compute_adaptive_chunk_size(dpi=dpi, pages_to_process=expected_total)
     )
-    cache_dir = Path("output/visuals/layout_infer_cache") / f"{source_path.stem}_dpi{dpi}"
+    cache_dir = Path(output_dir) / "_cache" / f"{source_path.stem}_dpi{dpi}"
     log.info(
         f"Runtime Strategy | pages={expected_total} chunk={resolved_chunk_size} "
         f"cache={'on' if cache_images else 'off'}"
@@ -181,10 +201,16 @@ def run_layout_infer(
         use_cache=cache_images,
     ):
         filename = f"page_{page_num:03d}.jpg"
-        dest = ls_auto_dir / filename
+        dest = visuals_dir / filename
         img.save(dest, "JPEG", quality=95)
-
-        task = engine.generate_auto_labels(img, page_num, f"{run_slug}/{filename}")
+        # Label Studio task imports resolve local-files URLs from document root.
+        # Emit output-root-relative paths for robust imports across storage subdirs.
+        output_root = Path("output").resolve()
+        try:
+            image_relpath = str(dest.resolve().relative_to(output_root)).replace("\\", "/")
+        except ValueError:
+            image_relpath = str(dest).replace("\\", "/")
+        task = engine.generate_auto_labels(img, page_num, image_relpath)
         prediction_results = task.get("annotations", [{}])[0].get("result", [])
         scores = [
             float(item.get("score", 0.0))
@@ -192,7 +218,7 @@ def run_layout_infer(
             if isinstance(item.get("score", None), (int, float))
         ]
         page_avg_conf = sum(scores) / len(scores) if scores else 0.0
-        if page_avg_conf < 0.6:
+        if page_avg_conf < 0.3:
             low_conf_pages += 1
         if len(scores) < 2:
             missing_divider_pages += 1
@@ -219,8 +245,7 @@ def run_layout_infer(
 
     progress.close()
 
-    json_path = run_dir / "auto_labels_tasks.json"
-    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path = data_dir / "auto_labels_tasks.json"
     with json_path.open("w", encoding="utf-8") as file:
         json.dump(tasks, file, indent=2)
 
@@ -233,7 +258,7 @@ def run_layout_infer(
         run_dir=run_dir,
         artifacts={
             "auto_labels_tasks": str(json_path),
-            "visuals_dir": str(ls_auto_dir),
+            "visuals_dir": str(visuals_dir),
         },
         metadata={
             "start_page": physical_start_page,
@@ -257,8 +282,11 @@ def run_layout_infer(
         )
         log.info(
             "Coverage Summary | "
-            f"Low-confidence pages (<0.60): {low_conf_pages}/{processed_count} ({low_conf_ratio:.1%}) | "
+            f"Low-confidence pages (<0.30): {low_conf_pages}/{processed_count} ({low_conf_ratio:.1%}) | "
             f"Pages with missing divider predictions (<2 labels): "
             f"{missing_divider_pages}/{processed_count} ({missing_ratio:.1%})"
         )
-    log.info("Note: Ensure project storage maps '/label-studio/files/visuals/layout_auto'.")
+    log.info(
+        "Note: In Label Studio, set Local Files path to a subdirectory under "
+        "'/label-studio/files' (security requirement), then import this run JSON."
+    )

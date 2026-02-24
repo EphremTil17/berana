@@ -47,6 +47,10 @@ def run_ocr_inference_pipeline(
         crop_manifest = None
     run_dir = next_versioned_dir(output_dir, pdf_path.stem)
     run_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = run_dir / "data"
+    meta_dir = run_dir / "meta"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = {
         "mode": "ocr-infer",
@@ -76,7 +80,7 @@ def run_ocr_inference_pipeline(
         ],
     }
 
-    manifest_path = run_dir / "inference_manifest.json"
+    manifest_path = data_dir / "inference_manifest.json"
     with manifest_path.open("w", encoding="utf-8") as file:
         json.dump(manifest, file, indent=2)
 

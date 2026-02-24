@@ -116,3 +116,29 @@ Tag: `v0.7.0` (implied)
 ### Fixed
 - **Pathing Robustness**: Hardened registry and output pathing to use absolute project-root detection, ensuring pipeline stability across varying execution environments.
 - **Memory Management (Rule 5)**: Optimized the PDF ingestion loop to ensure VRAM/RAM stability during high-resolution Homography calculations.
+
+## [0.8.0] - 2026-02-24
+
+### Added
+- **Canonical Diagnostics Stage**: Promoted `layout-diagnostics` as the single visual diagnostics workflow and replaced legacy PoC naming with `modules/ocr_engine/pipelines/diagnostics.py`.
+- **UI Confidence Banner**: Added explicit low-confidence rule display in `tools/label_studio/project_ui.xml`.
+- **Session Handoff Chronicle**: Appended a detailed 2026-02-24 engineering handoff in `.git_exclude/project_chronicle.md`.
+
+### Changed
+- **Input Contract Migration**: Migrated source assets from `data/*` to `input/*` (`input/raw_pdfs`, `input/layout_dataset`) and updated all code defaults/docs to match.
+- **Label Studio Path Contract**: Standardized task image URLs to output-root-relative local-files references and aligned storage documentation in `tools/label_studio/README.md`.
+- **CLI Surface Cleanup**: Removed `ingest` and old `poc-slicer` command exposure from `berana.py`; retained thin orchestration through modern command modules.
+- **Pipeline Boundaries**: Removed overlapping OCR-smoke/ingest execution path and consolidated diagnostics/cropping responsibilities into dedicated modules.
+- **Threading Throughput**: Increased default PDF render worker allocation in `modules/ocr_engine/pre_processors/pdf_to_image.py` for improved chunk conversion throughput.
+- **Confidence Policy**: Lowered low-confidence threshold from 0.60 to 0.30 across layout inference warnings and summaries.
+- **Documentation Scope**: Simplified top-level README operational detail and delegated step-by-step Label Studio operations to the dedicated secondary README.
+
+### Fixed
+- **HITL Geometry Scalar Crash**: Fixed `cv2.fitLine` scalar conversion in `tools/hitl_line_editor_app/geometry.py` by flattening OpenCV `(4,1)` vectors before casting.
+- **Label Studio XML Parsing Error**: Escaped comparison symbol in `project_ui.xml` (`&lt;`) to avoid setup parse failures.
+- **Label Studio Image Import Resolution**: Resolved repeated `$image` loading failures by enforcing deterministic local-files URL semantics and matching storage guidance.
+- **HITL DB Migration Integrity**: Corrected nested `layout_dataset` move side effect and restored canonical verified DB state at `input/layout_dataset/hitl_line_editor.sqlite3`.
+
+### Removed
+- **Obsolete Ingest Pipeline**: Deleted `modules/ocr_engine/pipelines/ingest.py` after diagnostics/cropping decoupling.
+- **Unused Label Studio Adapter**: Removed `utils/label_studio_adapter.py` after eliminating dead callsites.

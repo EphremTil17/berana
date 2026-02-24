@@ -58,7 +58,8 @@ def yield_pdf_pages(
 
     if thread_count is None:
         cpu_count = os.cpu_count() or 2
-        thread_count = max(1, min(4, cpu_count // 2))
+        # Poppler rendering scales well with additional workers; prefer fuller CPU usage.
+        thread_count = max(1, min(8, cpu_count))
 
     skip_set = set(omit_pages) if omit_pages else set()
     for chunk_start in range(first_page, last_page + 1, chunk_size):

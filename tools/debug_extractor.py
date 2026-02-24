@@ -77,11 +77,14 @@ def _collect_label_files(zip_file: zipfile.ZipFile) -> list[str]:
 
 def _resolve_source_image(base_name: str, source_dirs: list[Path]) -> Path | None:
     img_filename = f"{base_name}.jpg"
+    candidates: list[Path] = []
     for src_dir in source_dirs:
-        candidate = src_dir / img_filename
-        if candidate.exists():
-            return candidate
-    return None
+        for candidate in src_dir.rglob(img_filename):
+            if candidate.exists():
+                candidates.append(candidate)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 
 def _process_label_file(
@@ -138,8 +141,11 @@ def _extract_vectors_and_overlay(
 
 
 if __name__ == "__main__":
-    zip_path = Path("data/layout_dataset/Berana.Annotations.Final.zip")
-    source_dirs = [Path("output/visuals/layout_auto"), Path("output/visuals/layout_training")]
-    output_dir = Path("output/pipeline_debug/hitl_slices")
+    zip_path = Path("input/layout_dataset/Berana.Annotations.Final.zip")
+    source_dirs = [
+        Path("output/layout_inference"),
+        Path("output/layout_prep"),
+    ]
+    output_dir = Path("output/layout_diagnostics/hitl_slices")
 
     debug_hitl_extraction(zip_path, source_dirs, output_dir, num_samples=25)

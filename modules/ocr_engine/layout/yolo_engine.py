@@ -120,7 +120,7 @@ class LayoutSegmentationEngine:
             )
 
         avg_conf = sum(div["confidence"] for div in dividers) / len(dividers) if dividers else 0
-        if avg_conf < 0.6:
+        if avg_conf < 0.3:
             warnings.append(f"⚠️ LOW CONFIDENCE: Avg model certainty is only {avg_conf:.1%}.")
 
         status_text = (
@@ -131,7 +131,7 @@ class LayoutSegmentationEngine:
 
         return {
             "data": {
-                "image": f"/data/local-files/?d=visuals/layout_auto/{filename}",
+                "image": f"/data/local-files/?d={filename}",
                 "page_num": page_num,
                 "status": status_text,
             },
@@ -174,19 +174,20 @@ def export_images_for_labeling(
     Converts PDF pages to images and saves them to the mapped Docker volume.
     User will connect them via Label Studio's 'Cloud Storage -> Local Files' UI.
     """
+    from pdf2image.pdf2image import pdfinfo_from_path
+    from tqdm import tqdm
+
     from modules.ocr_engine.pre_processors.pdf_to_image import yield_pdf_pages
 
-    # We use the existing Label Studio volume mount path: output/visuals
-    # so that the Docker container can read them natively via its /berana_data mount.
-    ls_img_dir = Path("output/visuals/layout_training")
+    ls_img_dir = output_dir
     try:
         ls_img_dir.mkdir(parents=True, exist_ok=True)
     except PermissionError as exc:
         raise PermissionError(
-            "Cannot write to 'output/visuals/layout_training'. "
+            f"Cannot write to '{ls_img_dir}'. "
             "This path is often owned by root after Docker volume writes. "
             "Fix ownership, then retry, e.g.: "
-            "'sudo chown -R $USER:$USER output/visuals output'."
+            "'sudo chown -R $USER:$USER output'."
         ) from exc
 
     if num_pages is None:
@@ -194,11 +195,19 @@ def export_images_for_labeling(
     else:
         logger.info(f"Exporting {num_pages} pages to {ls_img_dir} for Label Studio...")
 
+    info = pdfinfo_from_path(str(pdf_path))
+    total_pages = int(info["Pages"])
+    planned_total = min(total_pages, num_pages) if num_pages is not None else total_pages
+
     count = 0
+    progress = tqdm(total=planned_total, desc="Layout Prep", unit="page", dynamic_ncols=True)
     for page_num, img in yield_pdf_pages(pdf_path, dpi=dpi, end_page=num_pages):
         filename = f"page_{page_num:03d}.jpg"
         dest = ls_img_dir / filename
         img.save(dest, "JPEG", quality=95)
         count += 1
+        progress.update(1)
+    progress.close()
 
     logger.info(f"Export Complete: {count} images saved to {ls_img_dir}")
+    return count

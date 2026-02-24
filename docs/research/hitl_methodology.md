@@ -12,10 +12,10 @@ By avoiding blind OCR on AI-generated layouts, we guarantee zero data contaminat
 
 1. **Mass AI Inference:**
    - Run the updated `layout-infer` command over the remaining ~360 pages of the document.
-   - *Command:* `python berana.py layout-infer --pdf-path data/raw_pdfs/doc_001.Triple.pdf --start-page 101 --num-pages 360`
+   - *Command:* `python berana.py layout-infer --pdf-path input/raw_pdfs/doc_001.Triple.pdf --start-page 101 --num-pages 360`
 2. **Review Environment (Label Studio):**
    - Import the generated JSON into Label Studio.
-   - Default file pattern: `output/layout_auto/<doc_stem>_vNN/auto_labels_tasks.json`
+   - Default file pattern: `output/layout_inference/<doc_stem>_vNN/data/auto_labels_tasks.json`
    - Perform human review. Since the model has been highly trained, ~90% of the pages will only require a single click ("Submit").
    - For edge cases (e.g., missing dividers or skewed pages), physically drag or redraw the polygons.
 3. **The Gold Standard Export:**
@@ -27,12 +27,12 @@ By avoiding blind OCR on AI-generated layouts, we guarantee zero data contaminat
 **Goal:** Isolate Ge'ez, Amharic, and English strips from human-verified divider geometry before OCR.
 
 1. **Current Command:**
-   - `python berana.py crop-columns --pdf-path data/raw_pdfs/doc_001.Triple.pdf`
+   - `python berana.py crop-columns --pdf-path input/raw_pdfs/doc_001.Triple.pdf`
 2. **Execution Flow inside `crop-columns`:**
-   - **Source Resolution:** Prefer `data/layout_dataset/hitl_line_editor.sqlite3`; fallback to `output/hitl/ocr_column_map.json`.
+   - **Source Resolution:** Prefer `input/layout_dataset/hitl_line_editor.sqlite3`; fallback to `output/hitl/ocr_column_map.json`.
    - **Rectification:** Run structural deskew (`rotate` or `rotate+homography`) from divider vectors.
-   - **Isolate:** Export per-page strips under `output/ocr_artifacts/<doc_stem>_vNN/spliced/page_XXX/`.
-   - **Manifests:** Emit `cropping_manifest.json` and `quality_report.json`.
+   - **Isolate:** Export per-page strips under `output/column_crops/<doc_stem>_vNN/visuals/spliced/page_XXX/`.
+   - **Manifests:** Emit `data/cropping_manifest.json` and `data/quality_report.json`.
 3. **Stage Chaining:**
    - The latest run pointer is persisted at `output/.registry/crop-columns/<doc_stem>.json`.
    - Downstream OCR/training stages resolve this pointer automatically.

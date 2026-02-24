@@ -1,1 +1,1 @@
-"""Dedicated OCR runtime pipelines (ingest, PoC diagnostics, precision extraction)."""
+"""Dedicated OCR runtime pipelines (layout diagnostics, precision extraction, OCR scaffolds)."""

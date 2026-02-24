@@ -10,61 +10,7 @@ from utils.logger import get_logger
 log = get_logger("OCRCLI")
 
 
-def run_ingest(
-    pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source liturgical PDF.")],
-    chunk_size: int = typer.Option(
-        50, "--chunk-size", help="How many pages to load into RAM at once."
-    ),
-    dpi: int = typer.Option(300, "--dpi", help="Image processing resolution."),
-    slice_only: bool = typer.Option(
-        False,
-        "--slice-only",
-        help="Run the OpenCV Grid-Slicer and export Label Studio GUI JSON (skips Text OCR).",
-    ),
-    start_page: int = typer.Option(1, "--start-page", help="Page number to begin processing at."),
-    omit_pages: Annotated[
-        str | None,
-        typer.Option(
-            "--omit-pages", help="Pages to skip entirely. Use commas or ranges (e.g., '1,2,5-8')."
-        ),
-    ] = None,
-    end_page: Annotated[
-        int | None,
-        typer.Option(
-            "--end-page",
-            help="Absolute last page number to process (inclusive).",
-        ),
-    ] = None,
-) -> None:
-    """Run OCR and layout analysis on a raw PDF, saving structural JSON."""
-    from modules.ocr_engine.orchestrator import process_pdf_to_structural_json
-
-    parsed_omit_pages = parse_omit_pages(omit_pages)
-    source_path = ensure_pdf_exists(pdf_path, context_label="Ingest Failed")
-    output_dir = Path("output")
-
-    log.info(f"Ingesting PDF from {source_path} into structural JSON... 🚀")
-    try:
-        final_file = process_pdf_to_structural_json(
-            pdf_path=source_path,
-            output_dir=output_dir,
-            chunk_size=chunk_size,
-            dpi=dpi,
-            slice_only=slice_only,
-            start_page=start_page,
-            omit_pages=parsed_omit_pages,
-            end_page=end_page,
-        )
-        if slice_only:
-            log.info(f"Grid-Slicing Complete. Label Studio Tasks saved to: {final_file}")
-        else:
-            log.info(f"✅ Ingestion Complete. Structural Map saved to: {final_file}")
-    except Exception as exc:
-        log.error(f"OCR Pipeline failed: {exc}")
-        raise typer.Exit(code=1) from exc
-
-
-def run_poc_slicer(
+def run_layout_diagnostics(
     pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source liturgical PDF.")],
     chunk_size: int = typer.Option(
         50, "--chunk-size", help="How many pages to load into RAM at once."
@@ -85,16 +31,18 @@ def run_poc_slicer(
         ),
     ] = None,
 ) -> None:
-    """Run PoC slicer to visually debug column crops."""
-    from modules.ocr_engine.orchestrator import run_poc_debug_pipeline
+    """Run layout diagnostics to visually inspect line detection and column slicing behavior."""
+    from modules.ocr_engine.orchestrator import run_layout_diagnostics_pipeline
 
+    logging.getLogger("PDFtoImage").setLevel(logging.WARNING)
+    logging.getLogger("YOLOEngine").setLevel(logging.WARNING)
     parsed_omit_pages = parse_omit_pages(omit_pages)
-    source_path = ensure_pdf_exists(pdf_path, context_label="PoC Slicer Failed")
-    output_dir = Path("output")
+    source_path = ensure_pdf_exists(pdf_path, context_label="Layout Diagnostics Failed")
+    output_dir = Path("output/layout_diagnostics")
 
-    log.info("Running PoC Text Detection & Gap-Seeking Slicer on pristine images... 🚀")
+    log.info("Running layout diagnostics on pristine images... ")
     try:
-        final_dir = run_poc_debug_pipeline(
+        final_dir = run_layout_diagnostics_pipeline(
             pdf_path=source_path,
             output_dir=output_dir,
             chunk_size=chunk_size,
@@ -103,15 +51,15 @@ def run_poc_slicer(
             omit_pages=parsed_omit_pages,
             end_page=end_page,
         )
-        log.info(f"✅ PoC Complete. Visual outputs ready for review in: {final_dir}")
+        log.info(f"✅ Layout diagnostics complete. Visual outputs ready for review in: {final_dir}")
     except Exception as exc:
-        log.error(f"PoC Slicer failed: {exc}")
+        log.error(f"Layout diagnostics failed: {exc}")
         raise typer.Exit(code=1) from exc
 
 
 def run_crop_columns(
     pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source PDF.")],
-    output_dir: str = typer.Option("output/ocr_artifacts", "--output-dir"),
+    output_dir: str = typer.Option("output/column_crops", "--output-dir"),
     rectify_mode: str = typer.Option(
         "rotate+homography", "--rectify-mode", help="Rectification style: rotate|rotate+homography"
     ),
@@ -140,7 +88,7 @@ def run_crop_columns(
 
     log.info(f"Starting column-cropping pipeline for {source_path}...")
     log.info(
-        "Resolving divider source (preferred: data/layout_dataset/hitl_line_editor.sqlite3; "
+        "Resolving divider source (preferred: input/layout_dataset/hitl_line_editor.sqlite3; "
         "fallback: output/hitl/ocr_column_map.json)"
     )
 
@@ -164,7 +112,7 @@ def run_crop_columns(
 
 def run_ocr(
     pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source PDF.")],
-    output_dir: str = typer.Option("output/ocr_inference", "--output-dir"),
+    output_dir: str = typer.Option("output/ocr_runs/inference", "--output-dir"),
     run_name: str = typer.Option("ocr_infer_v1", "--run-name"),
     rectify_mode: str = typer.Option(
         "rotate+homography", "--rectify-mode", help="Rectification style: rotate|rotate+homography"
@@ -215,7 +163,7 @@ def run_ocr(
 
 def run_ocr_infer(
     pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source PDF.")],
-    output_dir: str = typer.Option("output/ocr_inference", "--output-dir"),
+    output_dir: str = typer.Option("output/ocr_runs/inference", "--output-dir"),
     run_name: str = typer.Option("ocr_infer_v1", "--run-name"),
     rectify_mode: str = typer.Option(
         "rotate+homography", "--rectify-mode", help="Rectification style: rotate|rotate+homography"
@@ -251,7 +199,7 @@ def run_ocr_infer(
 
 def run_ocr_train(
     pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source PDF.")],
-    output_dir: str = typer.Option("output/ocr_training", "--output-dir"),
+    output_dir: str = typer.Option("output/ocr_runs/training", "--output-dir"),
     run_name: str = typer.Option("ocr_train_v1", "--run-name"),
     rectify_mode: str = typer.Option(
         "rotate+homography", "--rectify-mode", help="Rectification style: rotate|rotate+homography"

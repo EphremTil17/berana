@@ -50,10 +50,14 @@ def save_page(page_id: str, req: SaveRequest) -> dict[str, str]:
 def get_image(page_id: str) -> FileResponse:
     """Serve page image from known source directories."""
     img_filename = f"{page_id}.jpg"
+    candidates = []
     for directory in SOURCE_DIRS:
-        candidate = directory / img_filename
-        if candidate.exists():
-            return FileResponse(candidate)
+        for candidate in directory.rglob(img_filename):
+            if candidate.exists():
+                candidates.append(candidate)
+    if candidates:
+        newest = max(candidates, key=lambda path: path.stat().st_mtime)
+        return FileResponse(newest)
 
     raise HTTPException(status_code=404, detail="Image not found")
 

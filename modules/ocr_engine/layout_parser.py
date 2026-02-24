@@ -22,7 +22,7 @@ def load_predictors(
     from surya.foundation import FoundationPredictor
     from surya.layout import LayoutPredictor
 
-    logger.info("Loading DetectionPredictor (~1.1GB model)... ⏳")
+    logger.info("Loading DetectionPredictor (~1.1GB model)...")
     det_predictor = DetectionPredictor()
     logger.info("DetectionPredictor loaded. ✅")
 
@@ -32,7 +32,7 @@ def load_predictors(
     # Layout requires a dedicated FoundationPredictor with the specific Layout checkpoint.
     from surya.settings import settings
 
-    logger.info("Loading LayoutPredictor (~1.5GB model)... ⏳")
+    logger.info("Loading LayoutPredictor (~1.5GB model)...")
     layout_foundation = FoundationPredictor(checkpoint=settings.LAYOUT_MODEL_CHECKPOINT)
     layout_predictor = LayoutPredictor(layout_foundation)
     logger.info("LayoutPredictor loaded. ✅")
