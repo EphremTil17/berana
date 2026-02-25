@@ -229,7 +229,6 @@ This provides reproducibility (immutable run history) and simple stage chaining 
 | `ocr-train` (scaffold) | `output/ocr_runs/training/` | `<doc>_vNN/` | `data/training_manifest.json` | `ocr-train` |
 
 Notes:
-- `ocr-infer` is maintained as a compatibility alias and currently routes to `ocr` scaffold behavior.
 - Stage commands consume upstream artifacts through the latest-pointer registry to avoid brittle manual path passing.
 
 ---

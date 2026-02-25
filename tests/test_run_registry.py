@@ -1,9 +1,13 @@
 from pathlib import Path
 
+import pytest
+
 from utils.run_registry import (
+    RegistryCorruptionError,
     load_latest_run,
     next_versioned_dir,
     register_latest_run,
+    registry_file,
     resolve_required_input,
 )
 
@@ -47,3 +51,33 @@ def test_registry_round_trip_and_resolve_required_artifact(tmp_path: Path):
         root_dir=tmp_path / "registry",
     )
     assert resolved == manifest
+
+
+def test_registry_corruption_handling(tmp_path: Path):
+    """Malformed or incomplete registry files should raise RegistryCorruptionError."""
+    stage = "test-stage"
+    doc_stem = "test-doc"
+    path = registry_file(stage, doc_stem, root_dir=tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    path.write_text("{malformed json", encoding="utf-8")
+    with pytest.raises(RegistryCorruptionError, match="Failed to decode"):
+        load_latest_run(stage, doc_stem, root_dir=tmp_path)
+
+    path.write_text("[]", encoding="utf-8")
+    with pytest.raises(RegistryCorruptionError, match="invalid shape"):
+        load_latest_run(stage, doc_stem, root_dir=tmp_path)
+
+    path.write_text('{"stage": "test-stage"}', encoding="utf-8")
+    with pytest.raises(RegistryCorruptionError, match="missing required keys"):
+        load_latest_run(stage, doc_stem, root_dir=tmp_path)
+
+    path.write_text(
+        (
+            '{"schema_version":"0.9","stage":"test-stage","doc_stem":"test-doc",'
+            '"run_dir":"/tmp/run","updated_at_utc":"2026-02-25T00:00:00+00:00"}'
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(RegistryCorruptionError, match="unsupported schema_version"):
+        load_latest_run(stage, doc_stem, root_dir=tmp_path)

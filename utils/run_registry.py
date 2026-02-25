@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 
 from config.settings import settings
 
 REGISTRY_ROOT = settings.OUTPUT_DIR / ".registry"
+
+
+class RegistryError(Exception):
+    """Base exception for run registry errors."""
+
+
+class RegistryCorruptionError(RegistryError):
+    """Raised when a registry pointer file is malformed or missing required keys."""
 
 
 def next_versioned_dir(base_dir: Path, doc_stem: str) -> Path:
@@ -41,6 +51,7 @@ def register_latest_run(
 ) -> Path:
     """Persist the latest successful run pointer for a stage+document pair."""
     pointer = {
+        "schema_version": "1.0",
         "stage": stage,
         "doc_stem": doc_stem,
         "run_dir": str(run_dir),
@@ -50,7 +61,19 @@ def register_latest_run(
     }
     path = registry_file(stage, doc_stem, root_dir=root_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(pointer, indent=2), encoding="utf-8")
+
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, prefix=".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(pointer, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        Path(tmp_path).replace(path)
+    except Exception:
+        if Path(tmp_path).exists():
+            Path(tmp_path).unlink()
+        raise
+
     return path
 
 
@@ -59,7 +82,33 @@ def load_latest_run(stage: str, doc_stem: str, root_dir: Path | None = None) -> 
     path = registry_file(stage, doc_stem, root_dir=root_dir)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+
+    try:
+        pointer = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RegistryCorruptionError(
+            f"Failed to decode registry file {path}. File is corrupted: {exc}"
+        ) from exc
+
+    if not isinstance(pointer, dict):
+        raise RegistryCorruptionError(
+            f"Registry pointer {path} contains invalid shape (expected dict, got {type(pointer).__name__})."
+        )
+
+    required_keys = {"schema_version", "stage", "doc_stem", "run_dir", "updated_at_utc"}
+    missing = required_keys - set(pointer.keys())
+    if missing:
+        raise RegistryCorruptionError(
+            f"Registry pointer {path} is missing required keys: {missing}"
+        )
+
+    if pointer["schema_version"] != "1.0":
+        raise RegistryCorruptionError(
+            f"Registry pointer {path} has unsupported schema_version "
+            f"'{pointer['schema_version']}' (expected '1.0')."
+        )
+
+    return pointer
 
 
 def resolve_required_input(

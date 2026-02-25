@@ -19,9 +19,16 @@ VENV_PIP="$VENV_PATH/bin/pip"
 VENV_PYTHON="$VENV_PATH/bin/python"
 
 # --- DIRECTORY INITIALIZATION ---
-# Pre-create output directories to ensure they are owned by the current host user,
+# Pre-create canonical output stage roots to ensure they are owned by the current host user,
 # preventing Docker (running as root) from creating them with restricted permissions.
-mkdir -p "$PROJECT_ROOT/output/visuals"
+mkdir -p \
+  "$PROJECT_ROOT/output/layout_prep" \
+  "$PROJECT_ROOT/output/layout_inference" \
+  "$PROJECT_ROOT/output/layout_diagnostics" \
+  "$PROJECT_ROOT/output/column_crops" \
+  "$PROJECT_ROOT/output/ocr_runs/inference" \
+  "$PROJECT_ROOT/output/ocr_runs/training" \
+  "$PROJECT_ROOT/output/.registry"
 
 # --- TERMINAL COLORS ---
 BLUE='\033[0;34m'

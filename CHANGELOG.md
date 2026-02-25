@@ -142,3 +142,19 @@ Tag: `v0.7.0` (implied)
 ### Removed
 - **Obsolete Ingest Pipeline**: Deleted `modules/ocr_engine/pipelines/ingest.py` after diagnostics/cropping decoupling.
 - **Unused Label Studio Adapter**: Removed `utils/label_studio_adapter.py` after eliminating dead callsites.
+
+## [0.8.1] - 2026-02-25
+
+### Changed
+- **Registry Hardening**: Upgraded `utils/run_registry.py` with atomic latest-pointer writes (tmp file + flush + `fsync` + atomic replace), strict `"schema_version": "1.0"` enforcement, and loud corruption failures via `RegistryCorruptionError`.
+- **CLI Runtime Standardization**: Introduced `modules/cli/runtime.py` and refactored OCR CLI commands to use a shared `execute_pipeline` wrapper for consistent validation, error handling, and exit semantics.
+- **OCR Scaffold Manifest Contract**: Standardized OCR inference scaffold mode metadata to canonical `"ocr"` naming in `modules/ocr_engine/pipelines/inference.py`.
+- **Documentation Synchronization**: Updated `README.md` and release notes to remove `ocr-infer` compatibility references and align command surface with current runtime.
+
+### Added
+- **Validation Coverage**: Added `tests/test_cli_runtime.py` for standardized CLI failure exit handling and `tests/test_orchestration_chaining.py` for registry-based stage chaining invariants.
+- **Registry Corruption Assertions**: Expanded `tests/test_run_registry.py` to validate malformed JSON, invalid payload shape, missing required keys, and unsupported schema versions.
+
+### Removed
+- **Legacy Phase 2 OCR Modules**: Deleted obsolete `modules/ocr_engine/layout_parser.py`, `modules/ocr_engine/layout_mapping.py`, and `modules/ocr_engine/extractor.py` no longer used by the active staged pipeline.
+- **Deprecated CLI Alias**: Removed `ocr-infer` command exposure from `berana.py` and `modules/cli/ocr_commands.py` to maintain a single canonical OCR command path.

@@ -53,7 +53,7 @@ def run_ocr_inference_pipeline(
     meta_dir.mkdir(parents=True, exist_ok=True)
 
     manifest = {
-        "mode": "ocr-infer",
+        "mode": "ocr",
         "status": "scaffold_only",
         "created_at_utc": datetime.now(UTC).isoformat(),
         "inputs": {

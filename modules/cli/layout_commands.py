@@ -32,7 +32,7 @@ def run_layout_prep(
     ),
     dpi: int = typer.Option(300, "--dpi"),
 ) -> None:
-    """Convert PDF pages into labeling images for layout analysis in Label Studio."""
+    """Convert PDF pages into run-scoped images for downstream layout workflows."""
     log.info("Initializing layout-prep dependencies...")
     from modules.ocr_engine.layout.yolo_engine import export_images_for_labeling
 
@@ -43,7 +43,7 @@ def run_layout_prep(
     meta_dir.mkdir(parents=True, exist_ok=True)
 
     logging.getLogger("PDFtoImage").setLevel(logging.WARNING)
-    log.info("Preparing page images for Label Studio...")
+    log.info("Preparing page images for layout-prep...")
     try:
         exported_count = export_images_for_labeling(
             pdf_path=source_path, output_dir=visuals_dir, num_pages=num_pages, dpi=dpi
@@ -61,8 +61,13 @@ def run_layout_prep(
     )
     log.info(f"Latest pointer updated: {pointer}")
 
+    log.info(f"Layout prep complete. Exported image source directory: {visuals_dir}")
     log.info(
-        "Ready for Labeling! Point Label Studio local-files path to this run visuals directory: "
+        "This stage exports images only (no Label Studio task JSON). "
+        "Use 'layout-infer' to generate importable auto-label tasks."
+    )
+    log.info(
+        "If using Label Studio Local Files directly, point to: "
         f"/label-studio/files/layout_prep/{run_dir.name}/visuals (host: {visuals_dir})"
     )
 

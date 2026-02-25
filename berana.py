@@ -7,7 +7,6 @@ from modules.cli.ocr_commands import (
     run_crop_columns,
     run_layout_diagnostics,
     run_ocr,
-    run_ocr_infer,
     run_ocr_train,
 )
 from utils.logger import get_logger
@@ -42,7 +41,6 @@ app.command(name="layout-infer")(run_layout_infer)
 app.command(name="crop-columns")(run_crop_columns)
 app.command(name="ocr")(run_ocr)
 app.command(name="ocr-train")(run_ocr_train)
-app.command(name="ocr-infer")(run_ocr_infer)
 
 
 if __name__ == "__main__":
