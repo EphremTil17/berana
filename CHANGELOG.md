@@ -158,3 +158,25 @@ Tag: `v0.7.0` (implied)
 ### Removed
 - **Legacy Phase 2 OCR Modules**: Deleted obsolete `modules/ocr_engine/layout_parser.py`, `modules/ocr_engine/layout_mapping.py`, and `modules/ocr_engine/extractor.py` no longer used by the active staged pipeline.
 - **Deprecated CLI Alias**: Removed `ocr-infer` command exposure from `berana.py` and `modules/cli/ocr_commands.py` to maintain a single canonical OCR command path.
+
+## [0.10.0] - 2026-02-26
+
+### Added
+- **Closed-Loop HITL Finetuner CLI**: Added `tools/hitl_yolo_finetuner.py` with `export`, `preview`, `train`, and `run` commands for registry-native dataset export and YOLOv8 segmentation training.
+- **HITL Finetuner Modules**: Added `tools/hitl_yolo_finetuner_app/{export,geometry,preview,train}.py` with deterministic split manifests, provenance validation, geometric line-to-polygon conversion, and preview overlays.
+- **Page Omission Controls**: Added `--omit-pages` support (single/range syntax) across finetuner services to exclude known outlier pages without mutating source visuals.
+- **New Test Coverage**: Added `tests/test_hitl_yolo_finetuner_{export,geometry,train}.py` for provenance drift handling, strict image-dimension parity, clipping behavior, omit-pages filtering, registry registration, and Ctrl+C checkpoint preservation.
+- **Tooling Docs**: Added dedicated READMEs for `tools/hitl_line_editor_app` and `tools/hitl_yolo_finetuner_app`, with top-level README references to separate Label Studio, HITL verification, and HITL finetuning workflows.
+- **Checkpoint Introspection Utility**: Added `tools/yolo_debug.py` for local checkpoint metadata/fingerprint verification under PyTorch 2.6+ load behavior.
+
+### Changed
+- **Strict Provenance Contract**: Export now hard-fails on DB/image mismatches and pointer drift unless explicitly overridden via `--force-provenance`.
+- **Geometry Consistency**: Export and preview now share the same clipping/extrusion math (`--line-width-px`, `--clip-top-px`, `--clip-bottom-px`) to keep QA overlays aligned with training labels.
+- **Model Baseline Alignment**: Finetuner training defaults to `yolov8s-seg.pt` to match the established `train-layout` baseline.
+- **Run Directory Semantics**: Training now writes into the same export run directory (`doc_stem_vNN`) instead of advancing to `vNN+1`.
+- **Interrupt Safety**: Training preserves best-so-far weights on Ctrl+C when available.
+- **Training Observability**: Added explicit training config/checkpoint logs and recorded run metadata (`model`, `imgsz`, split/clipping config) for reproducibility.
+
+### Fixed
+- **Preview Progress Reporting**: Preview progress now tracks actual rendered overlays rather than total DB rows.
+- **Pathing/UX Drift**: Cleaned finetuner output path behavior to match versioned run directory conventions used across the pipeline.

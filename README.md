@@ -89,7 +89,7 @@ We have provided a bash script to automatically configure a reproducible python 
    chmod +x setup.sh
    ./setup.sh
    ```
-3. **Install PyTorch with CUDA 13.0** (must use the official PyTorch index):
+3. **Install PyTorch with CUDA 13.0 (Optional but Recommended Check)** (must use the official PyTorch index):
    ```bash
    source .venv/bin/activate
    pip install torch==2.10.0+cu130 --index-url https://download.pytorch.org/whl/cu130
@@ -108,31 +108,8 @@ python berana.py --help
 Each command has its own isolated help menu:
 ```bash
 python berana.py layout-diagnostics --help
-python berana.py benchmark-translation --help
+python berana.py ocr --help
 ```
-
-### The Three Phases of Berana
-1. **Layout Diagnostics (Active Development):** Validates Surya line detection + YOLO divider slicing with visual overlays for rapid debugging.
-   ```bash
-   # Full diagnostics pass
-   python berana.py layout-diagnostics --pdf-path "input/raw_pdfs/manuscript.pdf"
-
-   # Paginated diagnostics
-   python berana.py layout-diagnostics \
-       --pdf-path "input/raw_pdfs/manuscript.pdf" \
-       --start-page 1 \
-       --end-page 50 \
-       --omit-pages "1-8"
-   ```
-   **CLI Flags:**
-   | Flag | Type | Description |
-   |------|------|-------------|
-   | `--pdf-path` | TEXT (required) | Path to the source liturgical PDF |
-   | `--chunk-size` | INT (default: 50) | Pages loaded into RAM per batch |
-   | `--dpi` | INT (default: 300) | Image processing resolution |
-   | `--start-page` | INT (default: 1) | Page number to begin processing from |
-   | `--omit-pages` | TEXT | Pages to skip. Supports ranges: `"1,2,5-8"` |
-   | `--end-page` | INT | Absolute last page to process (inclusive) |
 
 2. **Pipeline (Future):** The "Gold Standard" execution. Chains Ingest ➡️ Translation.
    ```bash
@@ -163,6 +140,7 @@ This decoupled approach ensures our mathematical coordinate map (The "Brain") tr
 ### Phase 1: AI Layout Inference
 Predict column trajectories (gutters) over the entire document utilizing our specialized model (`models/layout/weights/berana_yolov8_divider_v13.pt`).
 
+Example:
 ```bash
 # 1. Prepare raw samples from a complex PDF
 python berana.py layout-prep --pdf-path input/raw_pdfs/manuscript.pdf --num-pages 20
@@ -170,38 +148,64 @@ python berana.py layout-prep --pdf-path input/raw_pdfs/manuscript.pdf --num-page
 # 2. Run vision inference to generate bounding masks across the entire manuscript
 python berana.py layout-infer --pdf-path input/raw_pdfs/manuscript.pdf --start-page 0 --num-pages 456
 ```
-
 By default, auto-label tasks are written to:
 `output/layout_inference/<pdf_stem>_vNN/data/auto_labels_tasks.json`
 
 Import that JSON into Label Studio for manual verification.
 For exact Local Files path configuration, import/export procedure, and troubleshooting,
-see [tools/label_studio/README.md](tools/label_studio/README.md).
+see the Label Studio workflow guide above.
 
-### Phase 2: Human Verification (The HITL Editor)
-
-`tools/hitl_line_editor.py`
+### Phase 2: Human in the Loop (HITL) Tools/Verification
 
 Because ancient manuscripts are physically crooked/tilted, bounding boxes fail. We utilize a **Line of Best Fit** vector engine that allows the researcher to pivot the detected AI columns linearly.
 
-> Read more: [HITL Line Editor Research Doc](docs/research/hitl_methodology.md)
+Berana includes multiple HITL tools for layout verification and refinement:
+1. **Label Studio** (`tools/label_studio/`)
+   - A local dockerized state of the art data annotation platform for adjusting annotations and generating training data. We use it to adjust the bounding boxes of the columns and the text.
+   - Stores verified geometry in `input/layout_dataset/hitl_line_editor.sqlite3`.
+   - Uses a "Line of Best Fit" vector engine to correct for manuscript tilt.
+   > Read more: [Label Studio ReadME](tools/label_studio/README.md)
 
-```bash
-# Start the local isolated SQLite verification server
-PYTHONPATH=. .venv/bin/python tools/hitl_line_editor.py
-```
-*(Open your browser to `http://localhost:8000`)*
+   ```bash
+   # Start the local isolated SQLite verification server
+   cd tools/label_studio
+   docker compose up -d && docker compose logs -f
+   ```
+   *(Open your browser to `http://localhost:8080`)*
+   * **Database:** Imports `output/layout_inference/<pdf_stem>_vNN/data/auto_labels_tasks.json`
+   * **Export:** Exports the verified and user adjusted annotations as YOLO export ZIP file.
 
-*   **Database:** Modifies `input/layout_dataset/hitl_line_editor.sqlite3`.
-*   **Geometric Contract:** Records absolute `[x1, y1, x2, y2]` array properties for surgical cropping.
+2. **HITL Line Editor (Optional)** (`tools/hitl_line_editor.py`)
+   - Picks up where Label Studio leaves off. A local web app for adjusting divider lines on a per-page basis to get perfect column dividers and layout masks.
+   - Uses a "Line of Best Fit" vector engine to correct for manuscript tilt.
+   - Stores verified geometry in `input/layout_dataset/hitl_line_editor.sqlite3`.
+   > Read more: [HITL Line Editor Research Doc](docs/research/hitl_methodology.md) | [HITL Line Editor ReadME](t and Usage:ools/hitl_line_editor_app/README.md)
+   - Imports the YOLO export ZIP file from Label Studio and allows the user to adjust the divider lines on a per-page basis to get perfect column dividers and layout masks.
+   ```bash
+   # Start the local isolated SQLite verification server
+   PYTHONPATH=. .venv/bin/python tools/hitl_line_editor.py
+   ```
+   *(Open your browser to `http://localhost:8000`)*
 
+   *   **Database:** Modifies `input/layout_dataset/hitl_line_editor.sqlite3`.
+   *   **Geometric Contract:** Records absolute `[x1, y1, x2, y2]` array properties for surgical cropping.
+
+3. **HITL YOLO Finetuner (Optional)** (`tools/hitl_yolo_finetuner.py`)
+
+   Berana includes a standalone HITL-to-YOLO finetuning tool that exports verified line data from the HITL SQLite database into a YOLOv8 segmentation dataset, supports visual QA previews, and can run training against the generated `dataset.yaml`.
+
+   > ReadME: [tools/hitl_yolo_finetuner_app/README.md](tools/hitl_yolo_finetuner_app/README.md)
+   ```bash
+   PYTHONPATH=. .venv/bin/python tools/hitl_yolo_finetuner.py
+   ```
+   *(Open your browser to `http://localhost:8001`)*
 ### Phase 3: Column Cropping (Active)
 
 ```bash
 # Take verified dividers and export per-page column crops (no OCR at this stage)
 python berana.py crop-columns --pdf-path input/raw_pdfs/manuscript.pdf
 ```
-*(Produces `data/cropping_manifest.json`, `data/quality_report.json`, and per-page spliced images in `visuals/spliced/`.)*
+*(Produces `output/column_crops/<doc>_vNN/data/cropping_manifest.json`, `output/column_crops/<doc>_vNN/data/quality_report.json`, and per-page spliced images in `output/column_crops/<doc>_vNN/visuals/spliced/`.)*
 
 ### Phase 4: OCR (Scaffold)
 
@@ -224,7 +228,7 @@ This provides reproducibility (immutable run history) and simple stage chaining 
 | `layout-prep` | `output/layout_prep/` | `<doc>_vNN/` | `visuals/page_XXX.jpg` | `layout-prep` |
 | `layout-infer` | `output/layout_inference/` | `<doc>_vNN/` | `data/auto_labels_tasks.json`, `visuals/page_XXX.jpg` | `layout-infer` |
 | `layout-diagnostics` | `output/layout_diagnostics/` | `<doc>_vNN/` | `visuals/visual_overlays/*.jpg` | `layout-diagnostics` |
-| `crop-columns` | `output/column_crops/` | `<doc>_vNN/` | `data/cropping_manifest.json`, `data/quality_report.json`, `visuals/spliced/page_XXX/*.png` | `crop-columns` |
+| `crop-columns` | `output/column_crops/` | `<doc>_vNN/` | `output/column_crops/<doc>_vNN/data/cropping_manifest.json`, `output/column_crops/<doc>_vNN/data/quality_report.json`, `output/column_crops/<doc>_vNN/visuals/spliced/page_XXX/*.png` | `crop-columns` |
 | `ocr` (scaffold) | `output/ocr_runs/inference/` | `<doc>_vNN/` | `data/inference_manifest.json` | `ocr` |
 | `ocr-train` (scaffold) | `output/ocr_runs/training/` | `<doc>_vNN/` | `data/training_manifest.json` | `ocr-train` |
 
@@ -252,7 +256,10 @@ cp input/layout_dataset/verified_lines_state.json .git_exclude/backup/verified_l
 
 Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved via active learning and mosaic augmentations across over 100 epochs, early stopping at ~0.270 hours training time on a single RTX 3060 Ti.
 
-> **Want to train your own custom layout model?** Check out the dedicated [Custom Model Training Guide](tools/label_studio/README.md) for instructions on setting up Label Studio, active learning, and YOLOv8-seg configuration.
+> **Want to train your own custom layout model?**
+> - Label Studio annotation/export path: [tools/label_studio/README.md](tools/label_studio/README.md)
+> - HITL verification workflow: [tools/hitl_line_editor_app/README.md](tools/hitl_line_editor_app/README.md)
+> - HITL SQLite-driven finetuner path: [tools/hitl_yolo_finetuner_app/README.md](tools/hitl_yolo_finetuner_app/README.md)
 
 **Validation Results (Mask Level):**
 *   **Mask mAP50:** `0.946`

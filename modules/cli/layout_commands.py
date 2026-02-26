@@ -80,7 +80,7 @@ def run_train_layout(
     """Fine-tune YOLOv8-small on the 3060 Ti using the labeled dataset."""
     from ultralytics import YOLO
 
-    log.info(f"🚀 Starting YOLOv8-small training on {data_yaml}...")
+    log.info(f"Starting YOLOv8-small training on {data_yaml}...")
     model = YOLO("yolov8s-seg.pt")
     model.train(
         data=data_yaml,

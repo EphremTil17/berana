@@ -1,8 +1,13 @@
-# Berana Custom Model Training Guide (Optional)
+# Label Studio Workflow Guide
 
-This guide is **strictly for developers and researchers** who need to train a YOLOv8-Segmentation layout model from scratch on a new type of manuscript.
+This guide is **strictly for Label Studio setup, annotation, and export workflows**.
 
-If you are only running OCR on ancient Ethiopic manuscripts similar to our baseline, **you do not need to do this**. You can use the provided `berana_yolov8_divider_v13.pt` weights and skip entirely to Phase 1 (Layout Inference) in the main pipeline.
+If you are only running OCR on ancient Ethiopic manuscripts similar to our baseline, you can use the provided `berana_yolov8_divider_v13.pt` weights and skip custom labeling/training.
+
+Scope boundary:
+- This README covers Label Studio operations only.
+- HITL line-editor workflows are documented in the main `README.md`.
+- HITL SQLite -> YOLO dataset export/training is documented in `tools/hitl_yolo_finetuner_app/README.md`.
 
 ---
 
@@ -97,7 +102,7 @@ python tools/ingest_labels.py \
     --source-images "output/layout_prep/<doc_stem>_vNN/visuals"
 ```
 
-## 5. Train the Model
+## 5. Train the Model (From Label Studio Export)
 
 Now you will execute the training using the YOLOv8-Segmentation backend with heavy Mosaic Augmentation (crucial for partial-page visibility).
 
@@ -113,7 +118,7 @@ python berana.py train-layout \
 
 *Note: You may need to tune `--batch-size` down to `8` or `4` if you encounter CUDA Out-Of-Memory (OOM) errors on GPUs with less than 8GB of VRAM.*
 
-## 6. The "Active Learning" Loop
+## 6. The "Active Learning" Loop (Label Studio Path)
 
 The most efficient way to scale from 30 pages to 500 pages of ground truth is **Active Learning**:
 
@@ -125,4 +130,7 @@ The most efficient way to scale from 30 pages to 500 pages of ground truth is **
 5. Manually correct the AI's mistakes (which takes 10x less time than drawing polygons from scratch).
 6. Re-export and train v2.
 
-By iteration v3 or v4, the model will reach `~0.95 mAP50`, and you can graduate to the standard HITL Line Editor phase defined in the main `README.md`.
+By iteration v3 or v4, the model can reach strong mask quality (often near `~0.95 mAP50` depending on data quality and domain drift).
+
+For the HITL database-driven finetuning path (without Label Studio re-export loops), use:
+`tools/hitl_yolo_finetuner_app/README.md`

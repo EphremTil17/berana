@@ -26,16 +26,32 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(__file__).parent.parent / "input" / "glossary.json"
     )
 
-    # Data Directories
-    DATA_DIR: Path = Field(default_factory=lambda: Path(__file__).parent.parent / "data")
+    # Canonical source/asset locations (input contract)
+    INPUT_RAW_PDF_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).parent.parent / "input" / "raw_pdfs"
+    )
+    INPUT_LAYOUT_DATASET_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).parent.parent / "input" / "layout_dataset"
+    )
+
+    # Canonical generated artifact locations (output contract)
+    OUTPUT_PROCESSED_IMAGES_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).parent.parent / "output" / "processed_images"
+    )
+    OUTPUT_EXTRACTED_JSON_DIR: Path = Field(
+        default_factory=lambda: Path(__file__).parent.parent / "output" / "extracted_json"
+    )
+
+    # Backward-compatible aliases (legacy names).
+    DATA_DIR: Path = Field(default_factory=lambda: Path(__file__).parent.parent / "output")
     RAW_PDF_DIR: Path = Field(
-        default_factory=lambda: Path(__file__).parent.parent / "data" / "raw_pdfs"
+        default_factory=lambda: Path(__file__).parent.parent / "input" / "raw_pdfs"
     )
     PROCESSED_IMAGES_DIR: Path = Field(
-        default_factory=lambda: Path(__file__).parent.parent / "data" / "processed_images"
+        default_factory=lambda: Path(__file__).parent.parent / "output" / "processed_images"
     )
     EXTRACTED_JSON_DIR: Path = Field(
-        default_factory=lambda: Path(__file__).parent.parent / "data" / "extracted_json"
+        default_factory=lambda: Path(__file__).parent.parent / "output" / "extracted_json"
     )
 
     # Load from environment variables and an optional .env file
@@ -50,6 +66,10 @@ DIRS_TO_CREATE = [
     settings.MODELS_DIR,
     settings.INPUT_DIR,
     settings.OUTPUT_DIR,
+    settings.INPUT_RAW_PDF_DIR,
+    settings.INPUT_LAYOUT_DATASET_DIR,
+    settings.OUTPUT_PROCESSED_IMAGES_DIR,
+    settings.OUTPUT_EXTRACTED_JSON_DIR,
     settings.RAW_PDF_DIR,
     settings.PROCESSED_IMAGES_DIR,
     settings.EXTRACTED_JSON_DIR,

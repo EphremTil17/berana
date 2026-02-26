@@ -32,7 +32,7 @@ By avoiding blind OCR on AI-generated layouts, we guarantee zero data contaminat
    - **Source Resolution:** Prefer `input/layout_dataset/hitl_line_editor.sqlite3`; fallback to `output/hitl/ocr_column_map.json`.
    - **Rectification:** Run structural deskew (`rotate` or `rotate+homography`) from divider vectors.
    - **Isolate:** Export per-page strips under `output/column_crops/<doc_stem>_vNN/visuals/spliced/page_XXX/`.
-   - **Manifests:** Emit `data/cropping_manifest.json` and `data/quality_report.json`.
+   - **Manifests:** Emit `output/column_crops/<doc>_vNN/data/cropping_manifest.json` and `output/column_crops/<doc>_vNN/data/quality_report.json`.
 3. **Stage Chaining:**
    - The latest run pointer is persisted at `output/.registry/crop-columns/<doc_stem>.json`.
    - Downstream OCR/training stages resolve this pointer automatically.
