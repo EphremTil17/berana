@@ -2,6 +2,7 @@ import sys
 
 import typer
 
+from modules.cli.benchmark_commands import app as benchmark_app
 from modules.cli.layout_commands import run_layout_infer, run_layout_prep, run_train_layout
 from modules.cli.ocr_commands import (
     run_crop_columns,
@@ -41,6 +42,7 @@ app.command(name="layout-infer")(run_layout_infer)
 app.command(name="crop-columns")(run_crop_columns)
 app.command(name="ocr")(run_ocr)
 app.command(name="ocr-train")(run_ocr_train)
+app.add_typer(benchmark_app, name="ocr-benchmark", help="Pilot 50+200 OCR benchmarking commands.")
 
 
 if __name__ == "__main__":
