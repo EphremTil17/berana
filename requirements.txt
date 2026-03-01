@@ -46,6 +46,7 @@ opencv-python-headless==4.11.0.86 # STRICT: Internal vision pre-processing pin
 scipy>=1.13.0                   # Required for 1D layout projection peaks
 pillow>=10.2.0,<11.0.0          # Verified for layout parser binning
 numpy>=2.4.2
+sentencepiece
 
 # 6. VISION AI & ANNOTATION
 # New stack for transitioning to YOLOv8-based layout analysis.
