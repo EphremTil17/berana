@@ -1,0 +1,1 @@
+"""OCR benchmark test suite."""
