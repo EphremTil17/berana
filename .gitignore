@@ -9,8 +9,7 @@ models/*
 output/*
 tools/label_studio/data/*
 !tools/label_studio/data/.env.example
-input/raw_pdfs/*
-input/layout_dataset/*
+input/*
 
 #Python cache
 **/__pycache__

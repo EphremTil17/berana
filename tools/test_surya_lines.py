@@ -4,12 +4,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
-# Add project root to PYTHONPATH
+import typer
+from PIL import Image, ImageDraw
+
+# Add project root to PYTHONPATH before other imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import typer  # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
+# Now imports can resolve correctly if they are in the project or site-packages
 from surya.detection import DetectionPredictor  # noqa: E402
 
 from modules.ocr_engine.orchestrator import run_precision_extraction_pipeline  # noqa: E402

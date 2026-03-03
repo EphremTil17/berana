@@ -90,7 +90,7 @@ Tag: `v0.6.0` (`3a11788`)
 - **Standalone HITL Web Tool**: Added `tools/hitl_line_editor.py` and the modular app package `tools/hitl_line_editor_app/` (`app.py`, `db.py`, `state.py`, `geometry.py`, `export.py`, `paths.py`, template HTML).
 - **OCR-Ready HITL Export**: Added `tools/export_hitl_coordinates.py` to transform verified divider state into explicit OCR coordinate payloads.
 - **Labeling Utility Scripts**: Added `tools/ingest_labels.py` and `tools/debug_extractor.py` for dataset ingestion and geometric verification debugging.
-- **Label Studio Runtime Assets**: Added `tools/label_studio/docker-compose.yaml`, `tools/label_studio/project_ui.xml`, and `tools/label_studio/setup_label_studio.sh`.
+- **Label Studio Runtime Assets**: Added `tools/label_studio/docker-compose.yaml`, `tools/label_studio/column_label_ui.xml`, and `tools/label_studio/setup_label_studio.sh`.
 - **Environment Templates**: Added `tools/label_studio/.env.example` and `tools/label_studio/data/.env.example` to support reproducible local setup without committing runtime secrets.
 
 ### Changed
@@ -121,7 +121,7 @@ Tag: `v0.7.0` (implied)
 
 ### Added
 - **Canonical Diagnostics Stage**: Promoted `layout-diagnostics` as the single visual diagnostics workflow and replaced legacy PoC naming with `modules/ocr_engine/pipelines/diagnostics.py`.
-- **UI Confidence Banner**: Added explicit low-confidence rule display in `tools/label_studio/project_ui.xml`.
+- **UI Confidence Banner**: Added explicit low-confidence rule display in `tools/label_studio/column_label_ui.xml`.
 - **Session Handoff Chronicle**: Appended a detailed 2026-02-24 engineering handoff in `.git_exclude/project_chronicle.md`.
 
 ### Changed
@@ -135,7 +135,7 @@ Tag: `v0.7.0` (implied)
 
 ### Fixed
 - **HITL Geometry Scalar Crash**: Fixed `cv2.fitLine` scalar conversion in `tools/hitl_line_editor_app/geometry.py` by flattening OpenCV `(4,1)` vectors before casting.
-- **Label Studio XML Parsing Error**: Escaped comparison symbol in `project_ui.xml` (`&lt;`) to avoid setup parse failures.
+- **Label Studio XML Parsing Error**: Escaped comparison symbol in `column_label_ui.xml` (`&lt;`) to avoid setup parse failures.
 - **Label Studio Image Import Resolution**: Resolved repeated `$image` loading failures by enforcing deterministic local-files URL semantics and matching storage guidance.
 - **HITL DB Migration Integrity**: Corrected nested `layout_dataset` move side effect and restored canonical verified DB state at `input/layout_dataset/hitl_line_editor.sqlite3`.
 
@@ -180,3 +180,38 @@ Tag: `v0.7.0` (implied)
 ### Fixed
 - **Preview Progress Reporting**: Preview progress now tracks actual rendered overlays rather than total DB rows.
 - **Pathing/UX Drift**: Cleaned finetuner output path behavior to match versioned run directory conventions used across the pipeline.
+
+## [0.11.0 - 0.11.4] - 2026-02-27 to 2026-03-03
+Range commits: `7739798`, `4adb40a`, `32b716a`, `f126456`, `fc3e0c6`
+
+### Added
+- **OCR Benchmark CLI Namespace**: Added `modules/cli/benchmark_commands.py` and registered `ocr-benchmark` in `berana.py`.
+- **Canonical Benchmark Schemas**: Added `schemas/ocr_benchmark.py` and `schemas/ocr_coverage.py` with strict typed contracts for manifests, coverage, and queue artifacts.
+- **Benchmark Dataset Core**: Added `modules/ocr_benchmark/dataset.py` with JSONL I/O, split validation, and leakage protection primitives.
+- **Benchmark Path Helpers**: Added `modules/ocr_benchmark/paths.py` for deterministic document-root output resolution.
+- **Package Boundary**: Added `modules/ocr_benchmark/__init__.py` to formalize OCR benchmark module isolation.
+- **Benchmark Prepare Stage**: Added `modules/ocr_benchmark/prepare.py` for line-crop extraction, reading-order sorting, quality flags, and deterministic split assignment.
+- **Label Studio Bridge**: Added `modules/ocr_benchmark/label_studio_sync.py` for split-aware task generation and idempotent export import into canonical manifest.
+- **OCR Benchmark Label Template**: Added `tools/label_studio/ocr_benchmark_project_ui.xml` for line transcription tasks.
+- **Surya Line Diagnostics Tool**: Added `tools/test_surya_lines.py` to validate line detection quality from crop/strip inputs.
+- **Metrics and Normalization Core**: Added `modules/ocr_benchmark/metrics.py` with Ethiopic normalization, CER/WER computation, alignment, and confusion helpers.
+- **Coverage Governance Module**: Added `modules/ocr_benchmark/coverage.py` for coverage reports, finetune gates, and ranked annotation queues.
+- **Charset Generation Module**: Added `modules/ocr_benchmark/charset_builder.py` for Unicode/Wiktionary-driven Ethiopic charset config generation.
+- **Evaluation/Reporting Module**: Added `modules/ocr_benchmark/reporting.py` for final scorecards, detailed line debug exports, confusion artifacts, and decision payloads.
+- **Model Runner Scaffolds**: Added `modules/ocr_benchmark/surya_runner.py`, `surya_finetuner.py`, `trocr_runner.py`, and `trocr_finetuner.py`.
+- **Test Package Reorganization**: Added `tests/hitl/` and `tests/ocr_benchmark/` package trees for domain-grouped test ownership.
+- **Benchmark Test Coverage**: Added OCR benchmark tests for schemas, dataset leakage, coverage report, queue ranking, split task export, normalization, and tokenizer preflight.
+- **Shared Test Configuration**: Added `tests/conftest.py` for reusable fixtures/hooks.
+- **OCR Benchmark Research Paper**: Added `docs/research/ocr_benchmark_pilot_report.md` with pilot methodology, rationale, and benchmark analysis narrative.
+
+### Changed
+- **Top-Level Command Surface**: Extended the main Typer app to expose OCR benchmark operations as a first-class service group.
+- **Label Studio Template Naming**: Renamed the layout template file from `project_ui.xml` to `column_label_ui.xml.xml` and updated references in `tools/label_studio/README.md`.
+- **Dependency Surface**: Added `sentencepiece` to `requirements.txt` to satisfy multilingual tokenizer requirements used in benchmark flows.
+- **Lint Policy for Tests**: Updated `pyproject.toml` with test-scope per-file docstring ignore rules and ambiguous-string handling for Ethiopic literals.
+- **README Operational Guidance**: Added OCR benchmark runbook flow to the main README and synchronized command sequences with implemented CLI behavior.
+- **Changelog Naming Sync**: Updated template references from `project_ui.xml` to `column_label_ui.xml` in historical notes for consistency.
+- **Runtime Logging Consistency**: Updated CLI runtime/log-level setup in `modules/cli/runtime.py` and `modules/cli/layout_commands.py` to use project logger utilities consistently.
+
+### Removed
+- **Legacy Test Locations**: Removed top-level `tests/test_hitl_yolo_finetuner_{export,geometry,train}.py` in favor of `tests/hitl/`.

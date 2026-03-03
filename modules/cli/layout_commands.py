@@ -1,5 +1,4 @@
 import json
-import logging
 import statistics
 from collections import deque
 from pathlib import Path
@@ -42,7 +41,7 @@ def run_layout_prep(
     meta_dir = run_dir / "meta"
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    logging.getLogger("PDFtoImage").setLevel(logging.WARNING)
+    get_logger("PDFtoImage").setLevel("WARNING")
     log.info("Preparing page images for layout-prep...")
     try:
         exported_count = export_images_for_labeling(
@@ -140,8 +139,8 @@ def run_layout_infer(
     )  # yield_pdf_pages is 1-indexed and inclusive
 
     if not verbose:
-        logging.getLogger("YOLOEngine").setLevel(logging.INFO)
-        logging.getLogger("PDFtoImage").setLevel(logging.WARNING)
+        get_logger("YOLOEngine").setLevel("INFO")
+        get_logger("PDFtoImage").setLevel("WARNING")
 
     engine = LayoutSegmentationEngine()
     if engine.model is None:
@@ -255,7 +254,9 @@ def run_layout_infer(
         json.dump(tasks, file, indent=2)
 
     log.info(
-        f"✅ Auto-Labeling Complete. Processed {processed_count} pages. Import '{json_path}' into Label Studio."
+        "✅ Auto-Labeling Complete. Processed %d pages. Import '%s' into Label Studio.",
+        processed_count,
+        json_path,
     )
     pointer = register_latest_run(
         stage="layout-infer",
@@ -287,8 +288,9 @@ def run_layout_infer(
         )
         log.info(
             "Coverage Summary | "
-            f"Low-confidence pages (<0.30): {low_conf_pages}/{processed_count} ({low_conf_ratio:.1%}) | "
-            f"Pages with missing divider predictions (<2 labels): "
+            "Low-confidence pages (<0.30): "
+            f"{low_conf_pages}/{processed_count} ({low_conf_ratio:.1%}) | "
+            "Pages with missing divider predictions (<2 labels): "
             f"{missing_divider_pages}/{processed_count} ({missing_ratio:.1%})"
         )
     log.info(
