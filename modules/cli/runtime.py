@@ -1,4 +1,3 @@
-import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -26,8 +25,8 @@ def execute_pipeline(
     Validates input paths, parses omit pages, wraps the pipeline call in a
     standardized try/except block, and strictly exits with code 1 on failure.
     """
-    logging.getLogger("PDFtoImage").setLevel(logging.WARNING)
-    logging.getLogger("YOLOEngine").setLevel(logging.WARNING)
+    get_logger("PDFtoImage").setLevel("WARNING")
+    get_logger("YOLOEngine").setLevel("WARNING")
 
     source_path = ensure_pdf_exists(pdf_path, context_label=context_label)
     parsed_omit_pages = parse_omit_pages(omit_pages_raw)

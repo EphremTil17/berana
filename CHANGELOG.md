@@ -90,7 +90,7 @@ Tag: `v0.6.0` (`3a11788`)
 - **Standalone HITL Web Tool**: Added `tools/hitl_line_editor.py` and the modular app package `tools/hitl_line_editor_app/` (`app.py`, `db.py`, `state.py`, `geometry.py`, `export.py`, `paths.py`, template HTML).
 - **OCR-Ready HITL Export**: Added `tools/export_hitl_coordinates.py` to transform verified divider state into explicit OCR coordinate payloads.
 - **Labeling Utility Scripts**: Added `tools/ingest_labels.py` and `tools/debug_extractor.py` for dataset ingestion and geometric verification debugging.
-- **Label Studio Runtime Assets**: Added `tools/label_studio/docker-compose.yaml`, `tools/label_studio/project_ui.xml`, and `tools/label_studio/setup_label_studio.sh`.
+- **Label Studio Runtime Assets**: Added `tools/label_studio/docker-compose.yaml`, `tools/label_studio/column_label_ui.xml`, and `tools/label_studio/setup_label_studio.sh`.
 - **Environment Templates**: Added `tools/label_studio/.env.example` and `tools/label_studio/data/.env.example` to support reproducible local setup without committing runtime secrets.
 
 ### Changed
@@ -121,7 +121,7 @@ Tag: `v0.7.0` (implied)
 
 ### Added
 - **Canonical Diagnostics Stage**: Promoted `layout-diagnostics` as the single visual diagnostics workflow and replaced legacy PoC naming with `modules/ocr_engine/pipelines/diagnostics.py`.
-- **UI Confidence Banner**: Added explicit low-confidence rule display in `tools/label_studio/project_ui.xml`.
+- **UI Confidence Banner**: Added explicit low-confidence rule display in `tools/label_studio/column_label_ui.xml`.
 - **Session Handoff Chronicle**: Appended a detailed 2026-02-24 engineering handoff in `.git_exclude/project_chronicle.md`.
 
 ### Changed
@@ -135,7 +135,7 @@ Tag: `v0.7.0` (implied)
 
 ### Fixed
 - **HITL Geometry Scalar Crash**: Fixed `cv2.fitLine` scalar conversion in `tools/hitl_line_editor_app/geometry.py` by flattening OpenCV `(4,1)` vectors before casting.
-- **Label Studio XML Parsing Error**: Escaped comparison symbol in `project_ui.xml` (`&lt;`) to avoid setup parse failures.
+- **Label Studio XML Parsing Error**: Escaped comparison symbol in `column_label_ui.xml` (`&lt;`) to avoid setup parse failures.
 - **Label Studio Image Import Resolution**: Resolved repeated `$image` loading failures by enforcing deterministic local-files URL semantics and matching storage guidance.
 - **HITL DB Migration Integrity**: Corrected nested `layout_dataset` move side effect and restored canonical verified DB state at `input/layout_dataset/hitl_line_editor.sqlite3`.
 

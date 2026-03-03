@@ -258,6 +258,12 @@ Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved v
 
 > **Want to train your own custom layout model?**
 > - Label Studio annotation/export path: [tools/label_studio/README.md](tools/label_studio/README.md)
+
+## 12. OCR Benchmark (Pilot 50+200)
+
+> **Need the full OCR benchmark runbook?**
+> - OCR benchmark full workflow and command flow: [modules/ocr_benchmark/README.md](modules/ocr_benchmark/README.md)
+> - Label Studio OCR setup details: [tools/label_studio/README.md](tools/label_studio/README.md)
 > - HITL verification workflow: [tools/hitl_line_editor_app/README.md](tools/hitl_line_editor_app/README.md)
 > - HITL SQLite-driven finetuner path: [tools/hitl_yolo_finetuner_app/README.md](tools/hitl_yolo_finetuner_app/README.md)
 
@@ -269,7 +275,7 @@ Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved v
 
 This extraordinarily high fidelity restricts human intervention required in Phase 2 to roughly **1 page out of every 7**, typically related to massive physical tears in the original parchment.
 
-## 12. Architectural Philosophy: The "Tree-Branch" Pattern
+## 13. Architectural Philosophy: The "Tree-Branch" Pattern
 This codebase adheres to a strict **Modular Monolith** architecture.
 * **Rule of Modularity:** No monolithic code. Maximum 250 lines per file.
 * **Orchestrator Pattern:** Top-level files (e.g., `berana.py`, `modules/ocr_engine/orchestrator.py`) contain **zero** processing logic. They are strictly routers/callers that pass explicitly typed DataClasses between deeper modules.
