@@ -33,6 +33,7 @@ ignore = [
     "D212",   # Multi-line docstring summary should start at the first line
     "W293",   # Blank line contains whitespace
     "W291",   # Trailing whitespace
+    "RUF001", # String contains ambiguous characters
 ]
 
 [tool.ruff.lint.mccabe]
@@ -41,6 +42,15 @@ max-complexity = 10
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "D101", # Missing docstring in public class
+    "D102", # Missing docstring in public method
+    "D103", # Missing docstring in public function
+    "D105", # Missing docstring in magic method
+    "D107", # Missing docstring in __init__
+]
 
 [tool.ruff.format]
 quote-style = "double"
