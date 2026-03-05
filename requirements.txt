@@ -40,6 +40,9 @@ torch==2.10.0+cu130             # NATIVE: CUDA 13.0
 torchvision==0.25.0+cu130       # NATIVE: CUDA 13.0
 torchaudio==2.10.0+cu130        # NATIVE: CUDA 13.0
 transformers>=4.48.0,<5.0.0     # STRICT: Surya 0.17.x breaks on transformers 5.x
+accelerate>=0.26.0              # Required by Hugging Face Trainer device setup
+peft>=0.18.0                    # Required for LoRA / QLoRA adapter finetuning
+bitsandbytes>=0.49.0            # Required for 4-bit QLoRA loading on NVIDIA GPUs
 einops>=0.8.1                   # Required for tensor manipulation in vision models
 pypdfium2==4.30.0               # STRICT: High-fidelity PDF-to-Image extraction
 opencv-python-headless==4.11.0.86 # STRICT: Internal vision pre-processing pin

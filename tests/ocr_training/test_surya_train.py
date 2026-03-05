@@ -1,0 +1,254 @@
+from types import SimpleNamespace
+
+import pytest
+import torch.nn as nn
+
+from modules.ocr_training.runtime.hardware_profile import (
+    GpuMemorySnapshot,
+    GpuProcessUsage,
+    _split_csv_line,
+    enforce_gpu_preflight,
+)
+from modules.ocr_training.runtime.telemetry import (
+    _combined_current_used_memory_mb,
+    _combined_peak_used_memory_mb,
+)
+from modules.ocr_training.surya_artifacts import load_finetune_meta, write_finetune_meta
+from modules.ocr_training.surya_common import (
+    infer_train_subset_bucket,
+    resolve_finetune_strategy,
+    resolve_save_eval_steps,
+    subset_train_rows,
+)
+from modules.ocr_training.surya_model import find_lora_target_modules
+
+
+def test_resolve_save_eval_steps_keeps_compatible_values():
+    eval_steps, save_steps = resolve_save_eval_steps(
+        eval_steps=500,
+        save_steps=1000,
+        load_best_model_at_end=True,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    assert eval_steps == 500
+    assert save_steps == 1000
+
+
+def test_resolve_save_eval_steps_adjusts_incompatible_values():
+    eval_steps, save_steps = resolve_save_eval_steps(
+        eval_steps=2000,
+        save_steps=500,
+        load_best_model_at_end=True,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    assert eval_steps == 2000
+    assert save_steps == 2000
+
+
+def test_resolve_save_eval_steps_no_best_model_mode():
+    eval_steps, save_steps = resolve_save_eval_steps(
+        eval_steps=2000,
+        save_steps=500,
+        load_best_model_at_end=False,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    assert eval_steps == 2000
+    assert save_steps == 500
+
+
+def test_split_csv_line_parses_stripped_fields():
+    parts = _split_csv_line("0, GPU-123, 8192, 512", 4)
+    assert parts == ["0", "GPU-123", "8192", "512"]
+
+
+def test_enforce_gpu_preflight_allows_low_foreign_usage(monkeypatch):
+    snapshot = GpuMemorySnapshot(
+        gpu_index=0,
+        gpu_uuid="GPU-123",
+        gpu_name="RTX 3060 Ti",
+        total_memory_mb=8192,
+        used_memory_mb=512,
+        processes=(GpuProcessUsage(pid=99999, process_name="python", used_memory_mb=512),),
+    )
+
+    monkeypatch.setattr(
+        "modules.ocr_training.runtime.hardware_profile.collect_gpu_memory_snapshot",
+        lambda _torch: snapshot,
+    )
+    monkeypatch.setattr("modules.ocr_training.runtime.hardware_profile.os.getpid", lambda: 12345)
+
+    torch_stub = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+    )
+
+    enforce_gpu_preflight(torch_stub, foreign_usage_threshold_ratio=0.10)
+
+
+def test_enforce_gpu_preflight_blocks_high_foreign_usage(monkeypatch):
+    snapshot = GpuMemorySnapshot(
+        gpu_index=0,
+        gpu_uuid="GPU-123",
+        gpu_name="RTX 3060 Ti",
+        total_memory_mb=8192,
+        used_memory_mb=1400,
+        processes=(
+            GpuProcessUsage(pid=22222, process_name="python", used_memory_mb=1200),
+            GpuProcessUsage(pid=12345, process_name="python", used_memory_mb=200),
+        ),
+    )
+
+    monkeypatch.setattr(
+        "modules.ocr_training.runtime.hardware_profile.collect_gpu_memory_snapshot",
+        lambda _torch: snapshot,
+    )
+    monkeypatch.setattr("modules.ocr_training.runtime.hardware_profile.os.getpid", lambda: 12345)
+
+    with pytest.raises(RuntimeError, match="GPU preflight blocked"):
+        enforce_gpu_preflight(
+            SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)),
+            foreign_usage_threshold_ratio=0.10,
+        )
+
+
+def test_combined_current_used_memory_mb_ignores_peak_reserved(monkeypatch):
+    snapshot = GpuMemorySnapshot(
+        gpu_index=0,
+        gpu_uuid="GPU-123",
+        gpu_name="RTX 3060 Ti",
+        total_memory_mb=8192,
+        used_memory_mb=4500,
+        processes=(),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.runtime.telemetry._torch_reserved_mb",
+        lambda _torch, *, peak: 8476 if peak else 4300,
+    )
+
+    used_mb = _combined_current_used_memory_mb(SimpleNamespace(), snapshot)
+
+    assert used_mb == 4500
+
+
+def test_combined_peak_used_memory_mb_includes_peak_reserved(monkeypatch):
+    snapshot = GpuMemorySnapshot(
+        gpu_index=0,
+        gpu_uuid="GPU-123",
+        gpu_name="RTX 3060 Ti",
+        total_memory_mb=8192,
+        used_memory_mb=4500,
+        processes=(),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.runtime.telemetry._torch_reserved_mb",
+        lambda _torch, *, peak: 8476 if peak else 4300,
+    )
+
+    used_mb = _combined_peak_used_memory_mb(SimpleNamespace(), snapshot)
+
+    assert used_mb == 8476
+
+
+def test_resolve_finetune_strategy_normalizes_and_validates():
+    assert resolve_finetune_strategy("QLoRA") == "qlora"
+    with pytest.raises(ValueError, match="Unsupported finetune strategy"):
+        resolve_finetune_strategy("adapter++")
+
+
+def test_write_and_load_finetune_meta_roundtrip(tmp_path):
+    payload = {
+        "schema_version": "1.0",
+        "finetune_strategy": "qlora",
+        "base_checkpoint": "datalab-to/surya",
+    }
+    write_finetune_meta(tmp_path, payload)
+    assert load_finetune_meta(tmp_path) == payload
+
+
+class _VisionAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.qkv = nn.Linear(4, 4)
+        self.proj = nn.Linear(4, 4)
+
+
+class _VisionBlock(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.attn = _VisionAttention()
+
+
+class _DecoderAttention(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.q_proj = nn.Linear(4, 4)
+        self.k_proj = nn.Linear(4, 4)
+        self.v_proj = nn.Linear(4, 4)
+        self.o_proj = nn.Linear(4, 4)
+
+
+class _DecoderLayer(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attn = _DecoderAttention()
+
+
+class _SuryaLikeModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.vision_encoder = nn.Module()
+        self.vision_encoder.blocks = nn.ModuleList([_VisionBlock()])
+        self.decoder = nn.Module()
+        self.decoder.layers = nn.ModuleList([_DecoderLayer()])
+
+
+def test_find_lora_target_modules_returns_attention_layers():
+    targets = find_lora_target_modules(_SuryaLikeModule())
+    assert "vision_encoder.blocks.0.attn.qkv" in targets
+    assert "vision_encoder.blocks.0.attn.proj" in targets
+    assert "decoder.layers.0.self_attn.q_proj" in targets
+    assert "decoder.layers.0.self_attn.o_proj" in targets
+
+
+def test_infer_train_subset_bucket_reads_image_path_markers():
+    assert infer_train_subset_bucket({"image": "/tmp/typed/example.png"}) == "typed"
+    assert (
+        infer_train_subset_bucket(
+            {
+                "image": (
+                    "output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset/"
+                    "images/train/fidel_dataset__train__synth_image_0_0.png__synth_image_0_0.png"
+                )
+            }
+        )
+        == "synthetic"
+    )
+    assert (
+        infer_train_subset_bucket(
+            {
+                "image": (
+                    "output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset/"
+                    "images/train/fidel_dataset__train__typed_3642_line_1.png__typed_3642_line_1.png"
+                )
+            }
+        )
+        == "typed"
+    )
+    assert infer_train_subset_bucket({"image": "/tmp/synthetic/example.png"}) == "synthetic"
+    assert infer_train_subset_bucket({"image": "/tmp/other/example.png"}) == "unknown"
+
+
+def test_subset_train_rows_is_deterministic_and_preserves_mix():
+    rows = [
+        {"image": f"/tmp/typed/sample_{index}.png", "text": f"typed-{index}"} for index in range(10)
+    ] + [
+        {"image": f"/tmp/synthetic/sample_{index}.png", "text": f"synthetic-{index}"}
+        for index in range(10)
+    ]
+
+    first = subset_train_rows(rows, train_fraction=0.3, seed=42)
+    second = subset_train_rows(rows, train_fraction=0.3, seed=42)
+
+    assert first == second
+    assert len(first) == 6
+    assert sum(infer_train_subset_bucket(row) == "typed" for row in first) == 3
+    assert sum(infer_train_subset_bucket(row) == "synthetic" for row in first) == 3
