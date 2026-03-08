@@ -225,6 +225,20 @@ def cli_train_surya(
             help="Deterministic fraction of the train split to use at load time.",
         ),
     ] = 1.0,
+    eval_fraction: Annotated[
+        float,
+        typer.Option(
+            "--eval-fraction",
+            help="Deterministic fraction of the validation split to use during training evaluation.",
+        ),
+    ] = 1.0,
+    eval_max_rows: Annotated[
+        int | None,
+        typer.Option(
+            "--eval-max-rows",
+            help="Optional cap on validation rows used during training evaluation after subsetting.",
+        ),
+    ] = None,
     planning_budget_minutes: Annotated[
         int,
         typer.Option("--planning-budget-minutes"),
@@ -289,7 +303,7 @@ def cli_train_surya(
     max_sequence_length: Annotated[int | None, typer.Option("--max-sequence-length")] = None,
     num_train_epochs: Annotated[float, typer.Option("--num-train-epochs")] = 8,
     learning_rate: Annotated[float, typer.Option("--learning-rate")] = 2e-5,
-    eval_steps: Annotated[int, typer.Option("--eval-steps")] = 500,
+    eval_steps: Annotated[int | None, typer.Option("--eval-steps")] = None,
     logging_steps: Annotated[int, typer.Option("--logging-steps")] = 10,
     save_steps: Annotated[int, typer.Option("--save-steps")] = 500,
     save_total_limit: Annotated[int, typer.Option("--save-total-limit")] = 4,
@@ -341,6 +355,8 @@ def cli_train_surya(
         mode=normalized_mode,
         seed=seed,
         train_fraction=train_fraction,
+        eval_fraction=eval_fraction,
+        eval_max_rows=eval_max_rows,
         planning_budget_minutes=planning_budget_minutes,
         target_vram_utilization=target_vram_utilization,
         strategy_allowlist=strategy_allowlist,
@@ -403,11 +419,35 @@ def cli_evaluate_surya(
         typer.Option("--run-key", help="Registry run key/stem."),
     ] = "fidel_typed_synthetic",
     split: Annotated[str, typer.Option("--split", help="Dataset split to evaluate.")] = "holdout",
+    eval_fraction: Annotated[
+        float,
+        typer.Option(
+            "--eval-fraction", help="Deterministic fraction of the requested split to evaluate."
+        ),
+    ] = 1.0,
+    eval_batch_size: Annotated[
+        int,
+        typer.Option("--eval-batch-size", help="Batch size for Surya inference during evaluation."),
+    ] = 8,
+    max_rows: Annotated[
+        int | None,
+        typer.Option("--max-rows", help="Optional cap on evaluated rows after split subsetting."),
+    ] = None,
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Deterministic seed for evaluation subsetting."),
+    ] = 42,
 ):
     """Evaluate Surya checkpoint on untouched split and emit CER/WER summary artifacts."""
     split = split.strip().lower()
     if split not in {"holdout", "val", "train"}:
         raise typer.BadParameter("--split must be one of: train, val, holdout")
+    if not 0 < eval_fraction <= 1.0:
+        raise typer.BadParameter("--eval-fraction must be in the interval (0, 1].")
+    if eval_batch_size < 1:
+        raise typer.BadParameter("--eval-batch-size must be >= 1.")
+    if max_rows is not None and max_rows < 1:
+        raise typer.BadParameter("--max-rows must be >= 1 when provided.")
 
     try:
         summary = evaluate_surya_checkpoint(
@@ -415,6 +455,10 @@ def cli_evaluate_surya(
             run_dir=run_dir,
             dataset_dir=dataset_dir,
             split=split,
+            eval_fraction=eval_fraction,
+            eval_batch_size=eval_batch_size,
+            max_rows=max_rows,
+            seed=seed,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         log.error("evaluate-surya failed: %s", exc)

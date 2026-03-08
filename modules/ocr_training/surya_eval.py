@@ -14,6 +14,7 @@ from modules.ocr_training.surya_common import (
     load_split_rows,
     relative_to_base,
     sanitize_prediction_text,
+    subset_rows,
 )
 
 TAG_FILTER_LIST = [
@@ -40,47 +41,73 @@ TAG_FILTER_LIST = [
 ]
 
 
+def _chunk_rows(rows: list[dict[str, str]], batch_size: int) -> list[list[dict[str, str]]]:
+    return [rows[index : index + batch_size] for index in range(0, len(rows), batch_size)]
+
+
 def evaluate_surya_checkpoint(
     *,
     run_key: str,
     run_dir: Path,
     dataset_dir: Path,
     split: str,
+    eval_fraction: float,
+    max_rows: int | None,
+    eval_batch_size: int,
+    seed: int,
     runtime,
     load_surya_eval_predictor,
 ) -> dict[str, Any]:
     """Evaluate Surya OCR predictions against target split labels."""
     rows = load_split_rows(dataset_dir, split)
+    if eval_fraction < 1.0:
+        rows = subset_rows(rows, fraction=eval_fraction, seed=seed)
+    if max_rows is not None and len(rows) > max_rows:
+        rows = rows[:max_rows]
     foundation_predictor = load_surya_eval_predictor(runtime, run_dir)
     predictor = runtime["RecognitionPredictor"](foundation_predictor)
     predictor.disable_tqdm = True
 
     records = []
-    for row in tqdm(rows, desc=f"Evaluate {split}", unit="line", dynamic_ncols=True):
-        image = Image.open(Path(row["image"])).convert("RGB")
-        result = predictor(
-            [image],
-            task_names=[runtime["TaskNames"].ocr_with_boxes],
-            bboxes=[[[0, 0, image.width, image.height]]],
+    for row_batch in tqdm(
+        _chunk_rows(rows, max(1, eval_batch_size)),
+        desc=f"Evaluate {split}",
+        unit="batch",
+        dynamic_ncols=True,
+    ):
+        images = []
+        bboxes = []
+        for row in row_batch:
+            with Image.open(Path(row["image"])) as image:
+                converted = image.convert("RGB")
+            images.append(converted)
+            bboxes.append([[0, 0, converted.width, converted.height]])
+        results = predictor(
+            images,
+            task_names=[runtime["TaskNames"].ocr_with_boxes] * len(images),
+            bboxes=bboxes,
             math_mode=False,
             drop_repeated_text=True,
             filter_tag_list=TAG_FILTER_LIST,
-        )[0]
-        raw_pred = sanitize_prediction_text(result.text_lines[0].text) if result.text_lines else ""
-        gt_text = row["text"]
-        norm_pred = normalize_ethiopic_text(raw_pred)
-        norm_gt = normalize_ethiopic_text(gt_text)
-        cer, wer, exact = calculate_cer_wer(norm_pred, norm_gt)
-        records.append(
-            {
-                "image": row["image"],
-                "gt_text": gt_text,
-                "pred_text": raw_pred,
-                "cer": cer,
-                "wer": wer,
-                "exact": exact,
-            }
         )
+        for row, result in zip(row_batch, results, strict=False):
+            raw_pred = (
+                sanitize_prediction_text(result.text_lines[0].text) if result.text_lines else ""
+            )
+            gt_text = row["text"]
+            norm_pred = normalize_ethiopic_text(raw_pred)
+            norm_gt = normalize_ethiopic_text(gt_text)
+            cer, wer, exact = calculate_cer_wer(norm_pred, norm_gt)
+            records.append(
+                {
+                    "image": row["image"],
+                    "gt_text": gt_text,
+                    "pred_text": raw_pred,
+                    "cer": cer,
+                    "wer": wer,
+                    "exact": exact,
+                }
+            )
 
     mean_cer = float(mean(r["cer"] for r in records)) if records else 1.0
     mean_wer = float(mean(r["wer"] for r in records)) if records else 1.0
@@ -96,6 +123,10 @@ def evaluate_surya_checkpoint(
     summary_payload = {
         "split": split,
         "num_rows": len(records),
+        "eval_fraction": eval_fraction,
+        "eval_batch_size": eval_batch_size,
+        "max_rows": max_rows,
+        "seed": seed,
         "mean_cer": mean_cer,
         "mean_wer": mean_wer,
         "exact_rate": exact_rate,
@@ -111,6 +142,10 @@ def evaluate_surya_checkpoint(
                 "",
                 f"- Split: `{split}`",
                 f"- Rows: `{len(records)}`",
+                f"- Eval Fraction: `{eval_fraction:.4f}`",
+                f"- Eval Batch Size: `{eval_batch_size}`",
+                f"- Max Rows: `{max_rows}`",
+                f"- Seed: `{seed}`",
                 f"- Mean CER: `{mean_cer:.4f}`",
                 f"- Mean WER: `{mean_wer:.4f}`",
                 f"- Exact Match: `{exact_rate:.4f}`",
@@ -131,6 +166,10 @@ def evaluate_surya_checkpoint(
             "status": "completed",
             "split": split,
             "num_rows": len(records),
+            "eval_fraction": eval_fraction,
+            "eval_batch_size": eval_batch_size,
+            "max_rows": max_rows,
+            "seed": seed,
             "mean_cer": mean_cer,
             "mean_wer": mean_wer,
             "exact_rate": exact_rate,

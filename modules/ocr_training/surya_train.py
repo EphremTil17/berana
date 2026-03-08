@@ -21,6 +21,7 @@ from modules.ocr_training.surya_artifacts import (
 from modules.ocr_training.surya_common import (
     infer_train_subset_bucket,
     load_split_rows,
+    subset_rows,
     subset_train_rows,
 )
 from modules.ocr_training.surya_common import (
@@ -47,6 +48,25 @@ from utils.logger import get_logger
 logger = get_logger("OCRTrainingSuryaTrain")
 
 
+def _prepare_train_and_val_rows(*, dataset_dir: Path, config: SuryaTrainConfig):
+    """Load and subset train/val rows according to the runtime config."""
+    original_train_rows = load_split_rows(dataset_dir, "train")
+    original_val_rows = load_split_rows(dataset_dir, "val")
+    train_rows = subset_train_rows(
+        original_train_rows,
+        train_fraction=config.train_fraction,
+        seed=config.seed,
+    )
+    val_rows = subset_rows(
+        original_val_rows,
+        fraction=config.eval_fraction,
+        seed=config.seed,
+    )
+    if config.eval_max_rows is not None and len(val_rows) > config.eval_max_rows:
+        val_rows = val_rows[: config.eval_max_rows]
+    return original_train_rows, original_val_rows, train_rows, val_rows
+
+
 def run_surya_finetune(
     *,
     run_key: str,
@@ -66,12 +86,9 @@ def run_surya_finetune(
         torch,
         foreign_usage_threshold_ratio=config.foreign_vram_threshold_ratio,
     )
-    original_train_rows = load_split_rows(dataset_dir, "train")
-    val_rows = load_split_rows(dataset_dir, "val")
-    train_rows = subset_train_rows(
-        original_train_rows,
-        train_fraction=config.train_fraction,
-        seed=config.seed,
+    original_train_rows, original_val_rows, train_rows, val_rows = _prepare_train_and_val_rows(
+        dataset_dir=dataset_dir,
+        config=config,
     )
     if len(train_rows) != len(original_train_rows):
         original_bucket_counts: dict[str, int] = {}
@@ -91,6 +108,15 @@ def run_surya_finetune(
             len(train_rows),
             sampled_bucket_counts,
             original_bucket_counts,
+        )
+    if len(val_rows) != len(original_val_rows):
+        logger.info(
+            "Applied eval_fraction=%.4f eval_max_rows=%s seed=%d to val split: %d -> %d rows",
+            config.eval_fraction,
+            config.eval_max_rows,
+            config.seed,
+            len(original_val_rows),
+            len(val_rows),
         )
     existing_finetune_meta = _load_finetune_meta(output_dir)
     if existing_finetune_meta:
@@ -217,6 +243,10 @@ def evaluate_surya_checkpoint(
     run_dir: Path,
     dataset_dir: Path,
     split: str,
+    eval_fraction: float = 1.0,
+    eval_batch_size: int = 8,
+    max_rows: int | None = None,
+    seed: int = 42,
 ) -> dict[str, float | int | str]:
     """Evaluate Surya OCR predictions against target split labels."""
     runtime = require_surya()
@@ -225,6 +255,10 @@ def evaluate_surya_checkpoint(
         run_dir=run_dir,
         dataset_dir=dataset_dir,
         split=split,
+        eval_fraction=eval_fraction,
+        eval_batch_size=eval_batch_size,
+        max_rows=max_rows,
+        seed=seed,
         runtime=runtime,
         load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
             runtime,

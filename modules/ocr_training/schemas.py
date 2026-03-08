@@ -124,6 +124,8 @@ class SuryaTrainConfig(BaseModel):
     mode: TrainMode = TrainMode.AUTO
     seed: int = 42
     train_fraction: float = 1.0
+    eval_fraction: float = 1.0
+    eval_max_rows: int | None = None
     planning_budget_minutes: int = 3
     target_vram_utilization: float = 0.9375
     strategy_allowlist: list[FinetuneStrategy] = Field(
@@ -148,7 +150,7 @@ class SuryaTrainConfig(BaseModel):
     max_sequence_length: int | None = None
     num_train_epochs: int = 8
     learning_rate: float = 2e-5
-    eval_steps: int = 500
+    eval_steps: int | None = None
     logging_steps: int = 10
     save_steps: int = 500
     save_total_limit: int = 4
@@ -194,6 +196,23 @@ class SuryaTrainConfig(BaseModel):
             raise ValueError("train_fraction must be > 0.0 and <= 1.0.")
         return normalized
 
+    @field_validator("eval_fraction")
+    @classmethod
+    def validate_eval_fraction(cls, value: float) -> float:
+        """Require a positive evaluation fraction no greater than 1.0."""
+        normalized = float(value)
+        if normalized <= 0.0 or normalized > 1.0:
+            raise ValueError("eval_fraction must be > 0.0 and <= 1.0.")
+        return normalized
+
+    @field_validator("eval_max_rows")
+    @classmethod
+    def validate_eval_max_rows(cls, value: int | None) -> int | None:
+        """Require eval_max_rows to be positive when provided."""
+        if value is not None and int(value) < 1:
+            raise ValueError("eval_max_rows must be >= 1 when provided.")
+        return value
+
 
 class HardwareProfile(BaseModel):
     """Normalized single-host hardware profile used by the adaptive planner."""
@@ -235,7 +254,7 @@ class TrainingCandidate(BaseModel):
     max_sequence_length: int = 1024
     num_train_epochs: float = 8
     learning_rate: float = 2e-5
-    eval_steps: int = 500
+    eval_steps: int | None = None
     logging_steps: int = 10
     save_steps: int = 500
     save_total_limit: int = 4

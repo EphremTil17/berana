@@ -125,6 +125,7 @@ def benchmark_candidate(
             output_dir=benchmark_dir,
             candidate=candidate,
             eval_enabled=False,
+            save_enabled=False,
             max_steps=config.warmup_steps_per_candidate + config.measure_steps_per_candidate,
             logger=logger,
         )
@@ -257,9 +258,11 @@ def run_training_candidate(
         task_name=runtime["TaskNames"].ocr_with_boxes,
     )
     compute_metrics = compute_metrics_factory(processor)
+    eval_enabled = candidate.eval_steps is not None and len(val_rows) > 0
+    save_enabled = candidate.save_steps is not None and candidate.save_steps > 0
     effective_candidate, checkpoint_metric_name = _resolve_effective_best_metric(
         candidate=candidate,
-        compute_metrics=compute_metrics,
+        compute_metrics=compute_metrics if eval_enabled else None,
         logger=logger,
     )
     finetune_meta["effective_metric_for_best_model"] = checkpoint_metric_name
@@ -268,7 +271,8 @@ def run_training_candidate(
         training_arguments_cls=runtime["TrainingArguments"],
         output_dir=output_dir,
         candidate=effective_candidate,
-        eval_enabled=True,
+        eval_enabled=eval_enabled,
+        save_enabled=save_enabled,
         max_steps=None,
         logger=logger,
     )
@@ -278,16 +282,17 @@ def run_training_candidate(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        eval_dataset=val_dataset,
+        eval_dataset=val_dataset if eval_enabled else None,
         data_collator=collator,
-        compute_metrics=compute_metrics,
+        compute_metrics=compute_metrics if eval_enabled else None,
     )
-    trainer.add_callback(
-        BestCerCheckpointCallback(
-            output_dir=output_dir,
-            metric_name=checkpoint_metric_name,
+    if eval_enabled:
+        trainer.add_callback(
+            BestCerCheckpointCallback(
+                output_dir=output_dir,
+                metric_name=checkpoint_metric_name,
+            )
         )
-    )
     if candidate.verbose_epochs:
         trainer.add_callback(epoch_logging_callback_cls())
     trainer.add_callback(

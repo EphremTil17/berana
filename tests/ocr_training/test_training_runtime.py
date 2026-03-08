@@ -252,7 +252,8 @@ def test_build_training_arguments_omits_none_max_steps():
         training_arguments_cls=training_arguments_cls,
         output_dir=Path("/tmp/unused"),
         candidate=_candidate("train"),
-        eval_enabled=True,
+        eval_enabled=False,
+        save_enabled=True,
         max_steps=None,
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
     )

@@ -60,6 +60,7 @@ def build_training_arguments(
     output_dir: Path,
     candidate: TrainingCandidate,
     eval_enabled: bool,
+    save_enabled: bool,
     max_steps: int | None,
     logger,
 ) -> Any:
@@ -69,12 +70,17 @@ def build_training_arguments(
         if candidate.metric_for_best_model.strip().lower() == "cer"
         else candidate.metric_for_best_model
     )
-    effective_eval_steps, effective_save_steps = resolve_save_eval_steps(
-        eval_steps=candidate.eval_steps,
-        save_steps=candidate.save_steps,
-        load_best_model_at_end=candidate.load_best_model_at_end and eval_enabled,
-        logger=logger,
-    )
+    effective_eval_steps = None
+    effective_save_steps = None
+    if eval_enabled:
+        effective_eval_steps, effective_save_steps = resolve_save_eval_steps(
+            eval_steps=int(candidate.eval_steps),
+            save_steps=candidate.save_steps,
+            load_best_model_at_end=candidate.load_best_model_at_end and eval_enabled,
+            logger=logger,
+        )
+    elif save_enabled:
+        effective_save_steps = max(1, int(candidate.save_steps))
     effective_workers = bounded_worker_count(candidate.dataloader_num_workers)
     if effective_workers != candidate.dataloader_num_workers:
         logger.warning(
@@ -103,8 +109,8 @@ def build_training_arguments(
         "num_train_epochs": candidate.num_train_epochs,
         "eval_strategy": "steps" if eval_enabled else "no",
         "eval_steps": effective_eval_steps if eval_enabled else None,
-        "save_strategy": "steps" if eval_enabled else "no",
-        "save_steps": effective_save_steps if eval_enabled else None,
+        "save_strategy": "steps" if save_enabled else "no",
+        "save_steps": effective_save_steps if save_enabled else None,
         "save_total_limit": candidate.save_total_limit,
         "load_best_model_at_end": candidate.load_best_model_at_end and eval_enabled,
         "metric_for_best_model": metric_for_best_model if eval_enabled else None,

@@ -26,3 +26,6 @@ runs/*
 # Organized Weights & Golden Datasets (Exceptions)
 !models/layout/weights/berana_yolov8_divider_v13.pt
 .cache/*
+
+# Local OCR dataset archives
+fidel_typed_synthetic_v01_hf_dataset.tar.gz

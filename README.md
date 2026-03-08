@@ -266,6 +266,7 @@ Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved v
 > - Label Studio OCR setup details: [tools/label_studio/README.md](tools/label_studio/README.md)
 > - HITL verification workflow: [tools/hitl_line_editor_app/README.md](tools/hitl_line_editor_app/README.md)
 > - HITL SQLite-driven finetuner path: [tools/hitl_yolo_finetuner_app/README.md](tools/hitl_yolo_finetuner_app/README.md)
+> - FIDEL extraction + Surya training tool: [tools/ocr_training/README.md](tools/ocr_training/README.md)
 
 **Validation Results (Mask Level):**
 *   **Mask mAP50:** `0.946`

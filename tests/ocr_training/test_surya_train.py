@@ -1,3 +1,4 @@
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,7 @@ from modules.ocr_training.runtime.telemetry import (
     _combined_current_used_memory_mb,
     _combined_peak_used_memory_mb,
 )
+from modules.ocr_training.schemas import SuryaTrainConfig
 from modules.ocr_training.surya_artifacts import load_finetune_meta, write_finetune_meta
 from modules.ocr_training.surya_common import (
     infer_train_subset_bucket,
@@ -21,6 +23,7 @@ from modules.ocr_training.surya_common import (
     subset_train_rows,
 )
 from modules.ocr_training.surya_model import find_lora_target_modules
+from modules.ocr_training.surya_training_args import build_training_arguments
 
 
 def test_resolve_save_eval_steps_keeps_compatible_values():
@@ -54,6 +57,57 @@ def test_resolve_save_eval_steps_no_best_model_mode():
     )
     assert eval_steps == 2000
     assert save_steps == 500
+
+
+def test_build_training_arguments_disables_eval_when_omitted_but_keeps_saving():
+    candidate = SimpleNamespace(
+        metric_for_best_model="cer",
+        eval_steps=None,
+        save_steps=500,
+        load_best_model_at_end=True,
+        dataloader_num_workers=4,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        dataloader_pin_memory=True,
+        dataloader_persistent_workers=True,
+        dataloader_prefetch_factor=2,
+        learning_rate=2e-5,
+        fp16=True,
+        gradient_checkpointing=False,
+        finetune_strategy=SimpleNamespace(value="qlora"),
+        num_train_epochs=1,
+        save_total_limit=4,
+        greater_is_better=False,
+        logging_steps=20,
+    )
+
+    args = build_training_arguments(
+        training_arguments_cls=lambda **kwargs: kwargs,
+        output_dir=Path("/tmp/out"),
+        candidate=candidate,
+        eval_enabled=False,
+        save_enabled=True,
+        max_steps=None,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    assert args["eval_strategy"] == "no"
+    assert args["eval_steps"] is None
+    assert args["save_strategy"] == "steps"
+    assert args["save_steps"] == 500
+    assert args["load_best_model_at_end"] is False
+
+
+def test_surya_train_config_allows_small_eval_subset():
+    config = SuryaTrainConfig(eval_fraction=0.1, eval_max_rows=100)
+
+    assert config.eval_fraction == 0.1
+    assert config.eval_max_rows == 100
+
+
+def test_surya_train_config_rejects_invalid_eval_max_rows():
+    with pytest.raises(ValueError, match="eval_max_rows"):
+        SuryaTrainConfig(eval_max_rows=0)
 
 
 def test_split_csv_line_parses_stripped_fields():

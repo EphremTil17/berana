@@ -78,14 +78,14 @@ def infer_train_subset_bucket(row: dict[str, str]) -> str:
     return "unknown"
 
 
-def subset_train_rows(
+def subset_rows(
     rows: list[dict[str, str]],
     *,
-    train_fraction: float,
+    fraction: float,
     seed: int,
 ) -> list[dict[str, str]]:
-    """Return a deterministic train-only subset while preserving source mix."""
-    if train_fraction >= 1.0:
+    """Return a deterministic subset while preserving source mix when possible."""
+    if fraction >= 1.0:
         return list(rows)
 
     buckets: dict[str, list[dict[str, str]]] = {
@@ -102,10 +102,20 @@ def subset_train_rows(
         if not bucket_rows:
             continue
         ordered = sorted(bucket_rows, key=lambda row: _stable_row_key(seed, row))
-        target_count = max(1, min(len(ordered), round(len(ordered) * train_fraction)))
+        target_count = max(1, min(len(ordered), round(len(ordered) * fraction)))
         selected.extend(ordered[:target_count])
 
     return sorted(selected, key=lambda row: _stable_row_key(seed, row))
+
+
+def subset_train_rows(
+    rows: list[dict[str, str]],
+    *,
+    train_fraction: float,
+    seed: int,
+) -> list[dict[str, str]]:
+    """Return a deterministic train-only subset while preserving source mix."""
+    return subset_rows(rows, fraction=train_fraction, seed=seed)
 
 
 def resolve_resume_checkpoint(output_dir: Path, resume_mode: str) -> Path | None:
