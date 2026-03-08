@@ -5,6 +5,10 @@ from types import SimpleNamespace
 from PIL import Image
 
 from modules.ocr_training.surya_eval import evaluate_surya_checkpoint
+from modules.ocr_training.surya_reports import (
+    write_confusion_artifacts,
+    write_training_history_artifacts,
+)
 
 
 def _write_split(path: Path, rows: list[dict[str, str]]) -> None:
@@ -63,3 +67,39 @@ def test_evaluate_surya_checkpoint_batches_inference(tmp_path: Path):
     assert summary["num_rows"] == 4
     assert summary["mean_cer"] == 0.0
     assert summary["mean_wer"] == 0.0
+
+
+def test_write_confusion_artifacts_outputs_top_pairs(tmp_path: Path):
+    eval_dir = tmp_path / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    artifacts = write_confusion_artifacts(
+        eval_dir=eval_dir,
+        split="holdout",
+        records=[
+            {"gt_text": "abc", "pred_text": "axc"},
+            {"gt_text": "abc", "pred_text": "axc"},
+        ],
+    )
+
+    payload = json.loads(artifacts["character_confusions_json"].read_text(encoding="utf-8"))
+    assert payload[0] == {"gt": "b", "pred": "x", "count": 2}
+    assert artifacts["character_confusions_md"].exists()
+
+
+def test_write_training_history_artifacts_writes_csv_and_svg(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    eval_dir = run_dir / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    trainer_state = {
+        "log_history": [
+            {"step": 10, "loss": 1.2, "epoch": 0.1},
+            {"step": 20, "eval_loss": 0.4, "eval_cer": 0.3, "eval_wer": 0.5, "epoch": 0.2},
+        ]
+    }
+    (run_dir / "trainer_state.json").write_text(json.dumps(trainer_state), encoding="utf-8")
+
+    artifacts = write_training_history_artifacts(run_dir=run_dir, eval_dir=eval_dir)
+
+    assert artifacts["training_history_csv"].exists()
+    assert artifacts["training_curves_svg"].exists()
+    assert "Eval CER" in artifacts["training_curves_svg"].read_text(encoding="utf-8")

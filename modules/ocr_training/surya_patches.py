@@ -18,7 +18,85 @@ def build_interrupt_callback(signal_state: TrainingSignalState, callback_base):
                 control.should_save = True
             return control
 
+        def on_prediction_step(self, args, state, control, **kwargs):
+            del args, state, kwargs
+            if signal_state.interrupted:
+                signal_state.eval_interrupted = True
+                control.should_training_stop = True
+                control.should_save = True
+            return control
+
     return _InterruptAwareCallback()
+
+
+def _warn_discarded_eval(signal_state: TrainingSignalState, logger, step: int) -> None:
+    if signal_state.eval_discard_warning_emitted:
+        return
+    signal_state.eval_discard_warning_emitted = True
+    logger.warning(
+        "Discarding eval metrics at step %d because interrupt was received during evaluation.",
+        step,
+    )
+
+
+def _strip_eval_payload(payload: dict[str, float | int] | None) -> bool:
+    if not payload:
+        return False
+    removed = False
+    for key in list(payload):
+        if key.startswith("eval_"):
+            payload.pop(key, None)
+            removed = True
+    return removed
+
+
+def build_eval_interrupt_discard_callback(signal_state: TrainingSignalState, callback_base, logger):
+    """Build a callback that discards eval metrics if a signal arrived during eval."""
+
+    class _EvalInterruptDiscardCallback(callback_base):
+        def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+            del args, kwargs
+            if not signal_state.eval_interrupted or not metrics:
+                return control
+            if _strip_eval_payload(metrics):
+                _warn_discarded_eval(signal_state, logger, int(state.global_step or 0))
+            return control
+
+        def on_log(self, args, state, control, logs=None, **kwargs):
+            del args, kwargs
+            if not signal_state.eval_interrupted or not logs:
+                return control
+            if _strip_eval_payload(logs):
+                _warn_discarded_eval(signal_state, logger, int(state.global_step or 0))
+                signal_state.eval_interrupted = False
+                signal_state.eval_discard_warning_emitted = False
+            return control
+
+    return _EvalInterruptDiscardCallback()
+
+
+def build_eval_cleanup_callback(*, torch_module, callback_base):
+    """Build a callback that drops CUDA cache immediately after evaluation."""
+
+    class _EvalCleanupCallback(callback_base):
+        def on_evaluate(self, args, state, control, **kwargs):
+            if not torch_module.cuda.is_available():
+                return control
+            try:
+                torch_module.cuda.synchronize()
+            except Exception:
+                return control
+            try:
+                torch_module.cuda.empty_cache()
+            except Exception:
+                return control
+            try:
+                torch_module.cuda.ipc_collect()
+            except Exception:
+                return control
+            return control
+
+    return _EvalCleanupCallback()
 
 
 def patch_surya_forward_for_trainer(model, torch_module, logger) -> None:
@@ -86,23 +164,69 @@ def patch_surya_checkpoint_inputs(model, logger) -> None:
     logger.info("Applied Surya checkpoint patch: vision patch embeddings now require grad.")
 
 
+def resolve_metrics_tokenizer(processor):
+    """Resolve the text tokenizer used for OCR metric decoding."""
+    tokenizer = getattr(processor, "tokenizer", None)
+    if tokenizer is not None:
+        return tokenizer
+    return getattr(processor, "ocr_tokenizer", None)
+
+
+def build_preprocess_logits_for_metrics():
+    """Compress eval logits into token IDs before Trainer stores them."""
+
+    def preprocess_logits_for_metrics(logits, labels):
+        del labels
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        dim = getattr(logits, "dim", None)
+        if callable(dim) and int(dim()) >= 3:
+            return logits.argmax(dim=-1)
+        ndim = getattr(logits, "ndim", None)
+        if ndim is not None and int(ndim) >= 3:
+            return np.argmax(logits, axis=-1)
+        return logits
+
+    return preprocess_logits_for_metrics
+
+
 def compute_metrics_factory(processor):
     """Build CER/WER compute_metrics callable for Hugging Face Trainer."""
-    tokenizer = getattr(processor, "tokenizer", None)
+    tokenizer = resolve_metrics_tokenizer(processor)
     if tokenizer is None:
         return None
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is None:
+        pad_token_id = getattr(processor, "pad_token_id", 0)
+    vocab_size = getattr(tokenizer, "vocab_size", None)
+    if vocab_size is None:
+        vocab_size = getattr(processor, "tokenizer_vocab_size", None)
+
+    def _sanitize_decode_ids(ids):
+        sanitized = np.array(ids, dtype=np.int64, copy=True)
+        sanitized[sanitized < 0] = int(pad_token_id)
+        if vocab_size is not None:
+            sanitized[sanitized >= int(vocab_size)] = int(pad_token_id)
+        return sanitized
 
     def _decode(ids):
-        return tokenizer.batch_decode(ids, skip_special_tokens=True)
+        return tokenizer.batch_decode(_sanitize_decode_ids(ids), skip_special_tokens=True)
 
     def compute_metrics(eval_pred) -> dict[str, float]:
         predictions = eval_pred.predictions
         labels = eval_pred.label_ids
         if isinstance(predictions, tuple):
             predictions = predictions[0]
-        pred_ids = np.argmax(predictions, axis=-1)
-        labels_for_decode = labels.copy()
-        labels_for_decode[labels_for_decode == -100] = tokenizer.pad_token_id
+        predictions_array = np.asarray(predictions)
+        pred_ids = (
+            np.argmax(predictions_array, axis=-1)
+            if predictions_array.ndim >= 3
+            else predictions_array
+        )
+        pred_ids = _sanitize_decode_ids(pred_ids)
+        labels_for_decode = np.array(labels, dtype=np.int64, copy=True)
+        labels_for_decode[labels_for_decode == -100] = int(pad_token_id)
+        labels_for_decode = _sanitize_decode_ids(labels_for_decode)
 
         decoded_preds = _decode(pred_ids)
         decoded_labels = _decode(labels_for_decode)

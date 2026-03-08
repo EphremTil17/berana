@@ -16,6 +16,10 @@ from modules.ocr_training.surya_common import (
     sanitize_prediction_text,
     subset_rows,
 )
+from modules.ocr_training.surya_reports import (
+    write_confusion_artifacts,
+    write_training_history_artifacts,
+)
 
 TAG_FILTER_LIST = [
     "p",
@@ -153,6 +157,11 @@ def evaluate_surya_checkpoint(
         ),
         encoding="utf-8",
     )
+    report_artifacts = {}
+    report_artifacts.update(
+        write_confusion_artifacts(eval_dir=eval_dir, split=split, records=records)
+    )
+    report_artifacts.update(write_training_history_artifacts(run_dir=run_dir, eval_dir=eval_dir))
     register_training_stage(
         stage=STAGE_SURYA_EVALUATE,
         run_key=run_key,
@@ -161,6 +170,10 @@ def evaluate_surya_checkpoint(
             "summary": relative_to_base(summary_path),
             "predictions": relative_to_base(predictions_path),
             "report": relative_to_base(report_path),
+            **{
+                artifact_name: relative_to_base(artifact_path)
+                for artifact_name, artifact_path in report_artifacts.items()
+            },
         },
         metadata={
             "status": "completed",

@@ -259,6 +259,10 @@ def cli_train_surya(
         int | None,
         typer.Option("--per-device-train-batch-size"),
     ] = None,
+    per_device_eval_batch_size: Annotated[
+        int | None,
+        typer.Option("--per-device-eval-batch-size"),
+    ] = None,
     gradient_accumulation_steps: Annotated[
         int | None,
         typer.Option("--gradient-accumulation-steps"),
@@ -362,6 +366,7 @@ def cli_train_surya(
         strategy_allowlist=strategy_allowlist,
         max_replans=max_replans,
         per_device_train_batch_size=per_device_train_batch_size,
+        per_device_eval_batch_size=per_device_eval_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         finetune_strategy=finetune_strategy,
         lora_rank=lora_rank,

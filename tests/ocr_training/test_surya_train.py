@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch.nn as nn
 
@@ -23,6 +24,10 @@ from modules.ocr_training.surya_common import (
     subset_train_rows,
 )
 from modules.ocr_training.surya_model import find_lora_target_modules
+from modules.ocr_training.surya_patches import (
+    build_preprocess_logits_for_metrics,
+    compute_metrics_factory,
+)
 from modules.ocr_training.surya_training_args import build_training_arguments
 
 
@@ -67,6 +72,7 @@ def test_build_training_arguments_disables_eval_when_omitted_but_keeps_saving():
         load_best_model_at_end=True,
         dataloader_num_workers=4,
         per_device_train_batch_size=1,
+        per_device_eval_batch_size=None,
         gradient_accumulation_steps=4,
         dataloader_pin_memory=True,
         dataloader_persistent_workers=True,
@@ -87,6 +93,7 @@ def test_build_training_arguments_disables_eval_when_omitted_but_keeps_saving():
         candidate=candidate,
         eval_enabled=False,
         save_enabled=True,
+        compute_metrics_enabled=False,
         max_steps=None,
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
     )
@@ -96,6 +103,45 @@ def test_build_training_arguments_disables_eval_when_omitted_but_keeps_saving():
     assert args["save_strategy"] == "steps"
     assert args["save_steps"] == 500
     assert args["load_best_model_at_end"] is False
+
+
+def test_build_training_arguments_sets_eval_batch_and_accumulation():
+    candidate = SimpleNamespace(
+        metric_for_best_model="cer",
+        eval_steps=500,
+        save_steps=500,
+        load_best_model_at_end=True,
+        dataloader_num_workers=4,
+        per_device_train_batch_size=1,
+        per_device_eval_batch_size=None,
+        gradient_accumulation_steps=4,
+        dataloader_pin_memory=True,
+        dataloader_persistent_workers=True,
+        dataloader_prefetch_factor=2,
+        learning_rate=2e-5,
+        fp16=True,
+        gradient_checkpointing=False,
+        finetune_strategy=SimpleNamespace(value="qlora"),
+        num_train_epochs=1,
+        save_total_limit=4,
+        greater_is_better=False,
+        logging_steps=20,
+    )
+
+    args = build_training_arguments(
+        training_arguments_cls=lambda **kwargs: kwargs,
+        output_dir=Path("/tmp/out"),
+        candidate=candidate,
+        eval_enabled=True,
+        save_enabled=True,
+        compute_metrics_enabled=True,
+        max_steps=None,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    assert args["per_device_eval_batch_size"] == 1
+    assert args["eval_accumulation_steps"] == 1
+    assert args["prediction_loss_only"] is False
 
 
 def test_surya_train_config_allows_small_eval_subset():
@@ -108,6 +154,97 @@ def test_surya_train_config_allows_small_eval_subset():
 def test_surya_train_config_rejects_invalid_eval_max_rows():
     with pytest.raises(ValueError, match="eval_max_rows"):
         SuryaTrainConfig(eval_max_rows=0)
+
+
+def test_compute_metrics_factory_uses_surya_ocr_tokenizer():
+    class _Tokenizer:
+        pad_token_id = None
+
+        def batch_decode(self, ids, skip_special_tokens=True):
+            del skip_special_tokens
+            outputs = []
+            for row in ids:
+                outputs.append(" ".join(str(int(token)) for token in row if int(token) != 0))
+            return outputs
+
+    processor = SimpleNamespace(ocr_tokenizer=_Tokenizer(), pad_token_id=0)
+    compute_metrics = compute_metrics_factory(processor)
+
+    metrics = compute_metrics(
+        SimpleNamespace(
+            predictions=np.array([[1, 2, 3], [4, 5, 0]]),
+            label_ids=np.array([[1, 2, 3], [4, 5, -100]]),
+        )
+    )
+
+    assert metrics["cer"] == 0.0
+    assert metrics["wer"] == 0.0
+    assert metrics["exact"] == 1.0
+
+
+def test_compute_metrics_factory_normalizes_negative_unsigned_like_labels():
+    class _Tokenizer:
+        pad_token_id = None
+
+        def batch_decode(self, ids, skip_special_tokens=True):
+            del skip_special_tokens
+            outputs = []
+            for row in ids:
+                outputs.append(" ".join(str(int(token)) for token in row if int(token) != 0))
+            return outputs
+
+    processor = SimpleNamespace(ocr_tokenizer=_Tokenizer(), pad_token_id=0)
+    compute_metrics = compute_metrics_factory(processor)
+
+    metrics = compute_metrics(
+        SimpleNamespace(
+            predictions=np.array([[1, 2, 3]], dtype=np.int64),
+            label_ids=np.array([[1, -100, -1]], dtype=np.int64),
+        )
+    )
+
+    assert metrics["cer"] >= 0.0
+    assert metrics["wer"] >= 0.0
+
+
+def test_compute_metrics_factory_normalizes_negative_prediction_ids():
+    class _Tokenizer:
+        pad_token_id = None
+        vocab_size = 32
+
+        def batch_decode(self, ids, skip_special_tokens=True):
+            del skip_special_tokens
+            outputs = []
+            for row in ids:
+                outputs.append(" ".join(str(int(token)) for token in row if int(token) != 0))
+            return outputs
+
+    processor = SimpleNamespace(ocr_tokenizer=_Tokenizer(), pad_token_id=0)
+    compute_metrics = compute_metrics_factory(processor)
+
+    metrics = compute_metrics(
+        SimpleNamespace(
+            predictions=np.array([[1, -5, 2]], dtype=np.int64),
+            label_ids=np.array([[1, 0, 2]], dtype=np.int64),
+        )
+    )
+
+    assert metrics["cer"] >= 0.0
+    assert metrics["wer"] >= 0.0
+
+
+def test_build_preprocess_logits_for_metrics_argmaxes_sequence_logits():
+    preprocess = build_preprocess_logits_for_metrics()
+    logits = np.array(
+        [
+            [[0.1, 0.9], [0.8, 0.2]],
+            [[0.7, 0.3], [0.4, 0.6]],
+        ]
+    )
+
+    result = preprocess(logits, labels=None)
+
+    assert result.tolist() == [[1, 0], [0, 1]]
 
 
 def test_split_csv_line_parses_stripped_fields():

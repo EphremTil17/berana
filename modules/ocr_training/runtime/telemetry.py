@@ -39,11 +39,27 @@ def _torch_reserved_mb(torch_module, *, peak: bool) -> int | None:
     return int(bytes_used // (1024 * 1024))
 
 
+def _driver_visible_used_memory_mb(torch_module, snapshot) -> int | None:
+    """Return host-visible used VRAM, clamped to dedicated capacity when known."""
+    if snapshot is None:
+        return None
+    total_memory_mb = (
+        snapshot.total_memory_mb
+        if snapshot.total_memory_mb > 0
+        else _torch_total_memory_mb(torch_module)
+    )
+    used_memory_mb = int(snapshot.used_memory_mb)
+    if total_memory_mb is None or total_memory_mb <= 0:
+        return used_memory_mb
+    return min(used_memory_mb, total_memory_mb)
+
+
 def _combined_current_used_memory_mb(torch_module, snapshot) -> int | None:
     """Combine host-visible GPU usage with current process-reserved CUDA memory."""
     observed = []
-    if snapshot is not None:
-        observed.append(int(snapshot.used_memory_mb))
+    driver_visible_used = _driver_visible_used_memory_mb(torch_module, snapshot)
+    if driver_visible_used is not None:
+        observed.append(driver_visible_used)
     reserved = _torch_reserved_mb(torch_module, peak=False)
     if reserved is not None:
         observed.append(reserved)
@@ -164,13 +180,26 @@ class VramPressureCallback:
                 if used_ratio < usage_threshold_ratio:
                     return control
 
+                overflow_note = ""
+                raw_driver_used_mb = int(snapshot.used_memory_mb) if snapshot is not None else None
+                if (
+                    raw_driver_used_mb is not None
+                    and total_memory_mb > 0
+                    and raw_driver_used_mb > total_memory_mb
+                ):
+                    overflow_note = (
+                        " Driver-visible GPU usage exceeded dedicated VRAM "
+                        f"({raw_driver_used_mb}MiB > {total_memory_mb}MiB), which usually "
+                        "means the workload has already spilled into shared/system memory."
+                    )
+
                 raise RuntimeError(
                     "VRAM guard triggered: GPU "
                     f"{getattr(snapshot, 'gpu_index', 0)} is using {used_memory_mb}MiB/"
                     f"{total_memory_mb}MiB ({used_ratio:.1%}), above the configured "
-                    f"threshold of {usage_threshold_ratio:.1%}. Training was stopped before likely "
+                    f"threshold of {usage_threshold_ratio:.1%}. Training was stopped before further "
                     "shared-system-memory spillover. Free GPU memory or reduce training pressure "
-                    "(LoRA/QLoRA, smaller batch, shorter sequence) and retry."
+                    f"(LoRA/QLoRA, smaller batch, shorter sequence) and retry.{overflow_note}"
                 )
 
         return _GuardCallback()

@@ -16,6 +16,7 @@ def candidate_to_train_config(config, candidate: TrainingCandidate):
         update={
             "finetune_strategy": candidate.finetune_strategy,
             "per_device_train_batch_size": candidate.per_device_train_batch_size,
+            "per_device_eval_batch_size": candidate.per_device_eval_batch_size,
             "gradient_accumulation_steps": candidate.gradient_accumulation_steps,
             "dataloader_num_workers": candidate.dataloader_num_workers,
             "dataloader_pin_memory": candidate.dataloader_pin_memory,
@@ -61,6 +62,7 @@ def build_training_arguments(
     candidate: TrainingCandidate,
     eval_enabled: bool,
     save_enabled: bool,
+    compute_metrics_enabled: bool,
     max_steps: int | None,
     logger,
 ) -> Any:
@@ -91,6 +93,8 @@ def build_training_arguments(
     kwargs = {
         "output_dir": str(output_dir),
         "per_device_train_batch_size": candidate.per_device_train_batch_size,
+        "per_device_eval_batch_size": candidate.per_device_eval_batch_size
+        or candidate.per_device_train_batch_size,
         "gradient_accumulation_steps": candidate.gradient_accumulation_steps,
         "dataloader_num_workers": effective_workers,
         "dataloader_pin_memory": candidate.dataloader_pin_memory,
@@ -109,12 +113,14 @@ def build_training_arguments(
         "num_train_epochs": candidate.num_train_epochs,
         "eval_strategy": "steps" if eval_enabled else "no",
         "eval_steps": effective_eval_steps if eval_enabled else None,
+        "eval_accumulation_steps": 1 if eval_enabled else None,
         "save_strategy": "steps" if save_enabled else "no",
         "save_steps": effective_save_steps if save_enabled else None,
         "save_total_limit": candidate.save_total_limit,
         "load_best_model_at_end": candidate.load_best_model_at_end and eval_enabled,
         "metric_for_best_model": metric_for_best_model if eval_enabled else None,
         "greater_is_better": candidate.greater_is_better,
+        "prediction_loss_only": eval_enabled and not compute_metrics_enabled,
         "remove_unused_columns": False,
         "logging_strategy": "steps",
         "logging_steps": max(1, candidate.logging_steps),

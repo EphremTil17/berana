@@ -32,7 +32,13 @@ from modules.ocr_training.surya_artifacts import (
 )
 from modules.ocr_training.surya_common import resolve_resume_checkpoint
 from modules.ocr_training.surya_data import LocalSuryaOCRDataset, SuryaOCRDataCollator
-from modules.ocr_training.surya_patches import build_interrupt_callback, compute_metrics_factory
+from modules.ocr_training.surya_patches import (
+    build_eval_cleanup_callback,
+    build_eval_interrupt_discard_callback,
+    build_interrupt_callback,
+    build_preprocess_logits_for_metrics,
+    compute_metrics_factory,
+)
 from modules.ocr_training.surya_training_args import (
     benchmark_subset_rows,
     build_training_arguments,
@@ -53,6 +59,60 @@ def _safe_save_training_bundle(*, model, processor, output_dir: Path, logger) ->
                 output_dir,
                 exc,
             )
+
+
+def _register_interrupted_training(
+    *,
+    trainer,
+    model,
+    processor,
+    output_dir: Path,
+    run_key: str,
+    attempts: list[dict[str, Any]],
+    candidate,
+    train_rows: list[dict[str, str]],
+    val_rows: list[dict[str, str]],
+    selection_reason: str,
+    discarded_candidates: int,
+    retry_count: int,
+    mode,
+    original_train_count: int,
+    config,
+    logger,
+):
+    """Persist interruption artifacts and registry metadata for a stopped run."""
+    latest_checkpoint = resolve_latest_checkpoint(output_dir)
+    emergency_dir = output_dir / "checkpoint-emergency"
+    emergency_dir.mkdir(parents=True, exist_ok=True)
+    _safe_save_training_bundle(
+        model=model,
+        processor=processor,
+        output_dir=emergency_dir,
+        logger=logger,
+    )
+    trainer.save_state()
+    resume_state_path = write_resume_state(
+        output_dir,
+        status="interrupted",
+        latest_checkpoint=latest_checkpoint or emergency_dir,
+    )
+    return register_interrupted_finetune(
+        run_key=run_key,
+        output_dir=output_dir,
+        attempts=attempts,
+        selected_candidate=candidate,
+        train_count=len(train_rows),
+        val_count=len(val_rows),
+        resume_state_path=resume_state_path,
+        emergency_dir=emergency_dir,
+        mode=mode,
+        selection_reason=selection_reason,
+        discarded_candidates=discarded_candidates,
+        retry_count=retry_count,
+        original_train_count=original_train_count,
+        train_fraction=float(config.train_fraction),
+        train_subset_seed=int(config.seed),
+    )
 
 
 def _resolve_effective_best_metric(*, candidate: TrainingCandidate, compute_metrics, logger):
@@ -126,6 +186,7 @@ def benchmark_candidate(
             candidate=candidate,
             eval_enabled=False,
             save_enabled=False,
+            compute_metrics_enabled=False,
             max_steps=config.warmup_steps_per_candidate + config.measure_steps_per_candidate,
             logger=logger,
         )
@@ -273,6 +334,7 @@ def run_training_candidate(
         candidate=effective_candidate,
         eval_enabled=eval_enabled,
         save_enabled=save_enabled,
+        compute_metrics_enabled=compute_metrics is not None and eval_enabled,
         max_steps=None,
         logger=logger,
     )
@@ -285,12 +347,28 @@ def run_training_candidate(
         eval_dataset=val_dataset if eval_enabled else None,
         data_collator=collator,
         compute_metrics=compute_metrics if eval_enabled else None,
+        preprocess_logits_for_metrics=build_preprocess_logits_for_metrics()
+        if eval_enabled and compute_metrics is not None
+        else None,
     )
     if eval_enabled:
+        trainer.add_callback(
+            build_eval_interrupt_discard_callback(
+                signal_state,
+                runtime["TrainerCallback"],
+                logger,
+            )
+        )
         trainer.add_callback(
             BestCerCheckpointCallback(
                 output_dir=output_dir,
                 metric_name=checkpoint_metric_name,
+            )
+        )
+        trainer.add_callback(
+            build_eval_cleanup_callback(
+                torch_module=torch,
+                callback_base=runtime["TrainerCallback"],
             )
         )
     if candidate.verbose_epochs:
@@ -315,6 +393,26 @@ def run_training_candidate(
     result = None
     try:
         trainer.train(resume_from_checkpoint=str(latest_resume) if latest_resume else None)
+        if signal_state.interrupted:
+            result = _register_interrupted_training(
+                trainer=trainer,
+                model=model,
+                processor=processor,
+                output_dir=output_dir,
+                run_key=run_key,
+                attempts=attempts,
+                candidate=candidate,
+                train_rows=train_rows,
+                val_rows=val_rows,
+                selection_reason=selection_reason,
+                discarded_candidates=discarded_candidates,
+                retry_count=retry_count,
+                mode=mode,
+                original_train_count=original_train_count,
+                config=config,
+                logger=logger,
+            )
+            return result
         _safe_save_training_bundle(
             model=model,
             processor=processor,
@@ -340,37 +438,23 @@ def run_training_candidate(
             train_subset_seed=int(config.seed),
         )
     except KeyboardInterrupt:
-        latest_checkpoint = resolve_latest_checkpoint(output_dir)
-        emergency_dir = output_dir / "checkpoint-emergency"
-        emergency_dir.mkdir(parents=True, exist_ok=True)
-        _safe_save_training_bundle(
+        result = _register_interrupted_training(
+            trainer=trainer,
             model=model,
             processor=processor,
-            output_dir=emergency_dir,
-            logger=logger,
-        )
-        trainer.save_state()
-        resume_state_path = write_resume_state(
-            output_dir,
-            status="interrupted",
-            latest_checkpoint=latest_checkpoint or emergency_dir,
-        )
-        result = register_interrupted_finetune(
-            run_key=run_key,
             output_dir=output_dir,
+            run_key=run_key,
             attempts=attempts,
-            selected_candidate=candidate,
-            train_count=len(train_rows),
-            val_count=len(val_rows),
-            resume_state_path=resume_state_path,
-            emergency_dir=emergency_dir,
-            mode=mode,
+            candidate=candidate,
+            train_rows=train_rows,
+            val_rows=val_rows,
             selection_reason=selection_reason,
             discarded_candidates=discarded_candidates,
             retry_count=retry_count,
+            mode=mode,
             original_train_count=original_train_count,
-            train_fraction=float(config.train_fraction),
-            train_subset_seed=int(config.seed),
+            config=config,
+            logger=logger,
         )
     finally:
         del trainer

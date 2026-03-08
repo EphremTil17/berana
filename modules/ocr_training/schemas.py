@@ -137,6 +137,7 @@ class SuryaTrainConfig(BaseModel):
     max_replans: int = 1
     finetune_strategy: FinetuneStrategy | None = None
     per_device_train_batch_size: int | None = None
+    per_device_eval_batch_size: int | None = None
     gradient_accumulation_steps: int | None = None
     dataloader_num_workers: int | None = None
     dataloader_pin_memory: bool = True
@@ -244,6 +245,7 @@ class TrainingCandidate(BaseModel):
     candidate_id: str
     finetune_strategy: FinetuneStrategy
     per_device_train_batch_size: int
+    per_device_eval_batch_size: int | None = None
     gradient_accumulation_steps: int
     dataloader_num_workers: int
     dataloader_pin_memory: bool = True

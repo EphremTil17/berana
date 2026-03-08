@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import signal
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,10 +29,17 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def resolve_latest_checkpoint(output_dir: Path) -> Path | None:
     """Resolve latest Hugging Face checkpoint directory if present."""
-    checkpoints = [p for p in output_dir.glob("checkpoint-*") if p.is_dir()]
+    checkpoints = []
+    for path in output_dir.glob("checkpoint-*"):
+        if not path.is_dir():
+            continue
+        suffix = path.name.removeprefix("checkpoint-")
+        if not suffix.isdigit():
+            continue
+        checkpoints.append(path)
     if not checkpoints:
         return None
-    checkpoints.sort(key=lambda p: int(p.name.split("-")[-1]))
+    checkpoints.sort(key=lambda p: int(p.name.removeprefix("checkpoint-")))
     return checkpoints[-1]
 
 
@@ -86,12 +94,17 @@ class TrainingSignalState:
 
     interrupted: bool = False
     warning_emitted: bool = False
+    eval_interrupted: bool = False
+    eval_discard_warning_emitted: bool = False
 
 
 def install_signal_handlers(state: TrainingSignalState) -> None:
     """Install SIGINT/SIGTERM handlers to mark an interrupted training run."""
+    owner_pid = os.getpid()
 
     def _handler(signum, _frame) -> None:
+        if os.getpid() != owner_pid:
+            return
         state.interrupted = True
         if not state.warning_emitted:
             state.warning_emitted = True
@@ -109,9 +122,11 @@ class BestCerCheckpointCallback(_TrainerCallback):
         self.output_dir = output_dir
         self.metric_name = metric_name
         self.best_value: float | None = None
+        self._pending_metric_value: float | None = None
+        self._pending_global_step: int | None = None
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
-        """Capture best checkpoint on every evaluation event."""
+        """Mark improved evaluation metrics for the next save event."""
         if not metrics:
             return control
         metric_value = metrics.get(self.metric_name)
@@ -119,15 +134,26 @@ class BestCerCheckpointCallback(_TrainerCallback):
             return control
         if self.best_value is None or float(metric_value) < float(self.best_value):
             self.best_value = float(metric_value)
-            checkpoint_path = resolve_latest_checkpoint(Path(args.output_dir))
-            if checkpoint_path is not None:
-                update_best_checkpoint_pointer(
-                    self.output_dir,
-                    checkpoint_path=checkpoint_path,
-                    metric_name=self.metric_name,
-                    metric_value=float(metric_value),
-                    global_step=int(state.global_step),
-                )
+            self._pending_metric_value = float(metric_value)
+            self._pending_global_step = int(state.global_step)
+        return control
+
+    def on_save(self, args, state, control, **kwargs):
+        """Update the stable best-checkpoint pointer after the checkpoint exists on disk."""
+        if self._pending_metric_value is None or self._pending_global_step is None:
+            return control
+        checkpoint_path = resolve_latest_checkpoint(Path(args.output_dir))
+        if checkpoint_path is None:
+            return control
+        update_best_checkpoint_pointer(
+            self.output_dir,
+            checkpoint_path=checkpoint_path,
+            metric_name=self.metric_name,
+            metric_value=self._pending_metric_value,
+            global_step=self._pending_global_step,
+        )
+        self._pending_metric_value = None
+        self._pending_global_step = None
         return control
 
 

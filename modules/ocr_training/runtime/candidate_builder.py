@@ -134,6 +134,7 @@ def _materialize_candidate(
         ),
         finetune_strategy=strategy,
         per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=config.per_device_eval_batch_size,
         gradient_accumulation_steps=grad_accum,
         dataloader_num_workers=workers,
         dataloader_pin_memory=config.dataloader_pin_memory,
@@ -210,6 +211,7 @@ def materialize_manual_candidate(config: SuryaTrainConfig) -> TrainingCandidate:
         per_device_train_batch_size=int(
             config.per_device_train_batch_size or MANUAL_DEFAULTS["per_device_train_batch_size"]
         ),
+        per_device_eval_batch_size=config.per_device_eval_batch_size,
         gradient_accumulation_steps=int(
             config.gradient_accumulation_steps or MANUAL_DEFAULTS["gradient_accumulation_steps"]
         ),

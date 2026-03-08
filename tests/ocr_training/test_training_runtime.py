@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from modules.ocr_training.checkpointing import TrainingSignalState
 from modules.ocr_training.runtime.autotune_runner import select_best_candidate
 from modules.ocr_training.runtime.candidate_builder import (
     build_training_candidates,
@@ -12,6 +13,7 @@ from modules.ocr_training.runtime.execution_controller import (
 )
 from modules.ocr_training.runtime.hardware_profile import detect_hardware_profile
 from modules.ocr_training.runtime.strategy_catalog import strategy_is_auto_admissible
+from modules.ocr_training.runtime.telemetry import _combined_current_used_memory_mb
 from modules.ocr_training.schemas import (
     CandidateResult,
     CandidateStatus,
@@ -25,6 +27,11 @@ from modules.ocr_training.surya_executor import (
     _resolve_effective_best_metric,
     _safe_save_training_bundle,
     run_training_candidate,
+)
+from modules.ocr_training.surya_patches import (
+    build_eval_cleanup_callback,
+    build_eval_interrupt_discard_callback,
+    build_interrupt_callback,
 )
 from modules.ocr_training.surya_planner import run_auto_with_fallback
 from modules.ocr_training.surya_training_args import build_training_arguments
@@ -254,6 +261,7 @@ def test_build_training_arguments_omits_none_max_steps():
         candidate=_candidate("train"),
         eval_enabled=False,
         save_enabled=True,
+        compute_metrics_enabled=False,
         max_steps=None,
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
     )
@@ -403,3 +411,154 @@ def test_safe_save_training_bundle_ignores_processor_serialization_errors(tmp_pa
 
     assert saved == [f"model:{tmp_path}"]
     assert warnings
+
+
+def test_run_training_candidate_marks_signal_stop_as_interrupted(tmp_path: Path, monkeypatch):
+    torch_stub = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: False,
+        )
+    )
+
+    class _Trainer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def add_callback(self, callback):
+            return None
+
+        def train(self, resume_from_checkpoint=None):
+            del resume_from_checkpoint
+            return None
+
+        def save_state(self):
+            return None
+
+    runtime = {
+        "torch": torch_stub,
+        "TrainingArguments": lambda **kwargs: SimpleNamespace(**kwargs),
+        "Trainer": _Trainer,
+        "TrainerCallback": object,
+        "TaskNames": SimpleNamespace(ocr_with_boxes="ocr"),
+    }
+    candidate = _candidate("b1", batch_size=1)
+    processor = SimpleNamespace(save_pretrained=lambda path: None)
+    model = SimpleNamespace(save_pretrained=lambda path: None)
+
+    def _load_stack(runtime_arg, checkpoint, config):
+        del runtime_arg, checkpoint, config
+        return model, processor, {}
+
+    def _install_signal_handlers(state):
+        state.interrupted = True
+
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.install_signal_handlers",
+        _install_signal_handlers,
+    )
+
+    result = run_training_candidate(
+        runtime=runtime,
+        run_key="test",
+        output_dir=tmp_path,
+        config=SuryaTrainConfig(mode=TrainMode.MANUAL),
+        candidate=candidate,
+        base_checkpoint="checkpoint",
+        train_rows=[],
+        val_rows=[],
+        original_train_count=0,
+        attempts=[],
+        selection_reason="manual_mode",
+        discarded_candidates=0,
+        retry_count=0,
+        planned_samples_per_second=None,
+        mode=TrainMode.MANUAL,
+        load_surya_training_stack=_load_stack,
+        logger=SimpleNamespace(
+            info=lambda *args, **kwargs: None, warning=lambda *args, **kwargs: None
+        ),
+        epoch_logging_callback_cls=lambda: object(),
+    )
+
+    assert result["status"] == "interrupted"
+    assert (tmp_path / "resume_state.json").exists()
+
+
+def test_combined_current_used_memory_caps_driver_report_to_total():
+    torch_stub = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            memory_reserved=lambda: 2048 * 1024 * 1024,
+        )
+    )
+    snapshot = SimpleNamespace(total_memory_mb=8192, used_memory_mb=10186)
+
+    used_memory_mb = _combined_current_used_memory_mb(torch_stub, snapshot)
+
+    assert used_memory_mb == 8192
+
+
+def test_eval_cleanup_callback_flushes_cuda_cache():
+    calls: list[str] = []
+    torch_stub = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            synchronize=lambda: calls.append("synchronize"),
+            empty_cache=lambda: calls.append("empty_cache"),
+            ipc_collect=lambda: calls.append("ipc_collect"),
+        )
+    )
+
+    callback = build_eval_cleanup_callback(torch_module=torch_stub, callback_base=object)
+    control = SimpleNamespace()
+
+    returned_control = callback.on_evaluate(None, None, control)
+
+    assert returned_control is control
+    assert calls == ["synchronize", "empty_cache", "ipc_collect"]
+
+
+def test_interrupt_callback_marks_eval_interrupted_on_prediction_step():
+    state = TrainingSignalState(interrupted=True)
+    callback = build_interrupt_callback(state, object)
+    control = SimpleNamespace(should_training_stop=False, should_save=False)
+
+    returned_control = callback.on_prediction_step(None, None, control)
+
+    assert returned_control is control
+    assert state.eval_interrupted is True
+    assert control.should_training_stop is True
+    assert control.should_save is True
+
+
+def test_eval_interrupt_discard_callback_strips_metrics_and_logs():
+    warnings: list[str] = []
+    state = TrainingSignalState(interrupted=True, eval_interrupted=True)
+    callback = build_eval_interrupt_discard_callback(
+        state,
+        object,
+        SimpleNamespace(warning=lambda message, *args: warnings.append(message % args)),
+    )
+    control = SimpleNamespace()
+    metrics = {
+        "eval_loss": 0.2,
+        "eval_cer": 0.3,
+        "eval_wer": 0.4,
+        "eval_exact": 0.0,
+    }
+    logs = {
+        "eval_loss": 0.2,
+        "eval_cer": 0.3,
+        "eval_wer": 0.4,
+        "eval_exact": 0.0,
+        "eval_runtime": 1.0,
+    }
+    trainer_state = SimpleNamespace(global_step=123)
+
+    callback.on_evaluate(None, trainer_state, control, metrics=metrics)
+    callback.on_log(None, trainer_state, control, logs=logs)
+
+    assert metrics == {}
+    assert logs == {}
+    assert state.eval_interrupted is False
+    assert len(warnings) >= 1
