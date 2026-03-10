@@ -14,6 +14,8 @@ def candidate_to_train_config(config, candidate: TrainingCandidate):
     """Project a concrete candidate back into the shared train config shape."""
     return config.model_copy(
         update={
+            "execution_backend": candidate.execution_backend,
+            "distributed_world_size": candidate.world_size,
             "finetune_strategy": candidate.finetune_strategy,
             "per_device_train_batch_size": candidate.per_device_train_batch_size,
             "per_device_eval_batch_size": candidate.per_device_eval_batch_size,
@@ -67,6 +69,8 @@ def build_training_arguments(
     logger,
 ) -> Any:
     """Build Hugging Face TrainingArguments for benchmark or full execution."""
+    execution_backend = getattr(candidate, "execution_backend", None)
+    execution_backend_value = getattr(execution_backend, "value", execution_backend)
     metric_for_best_model = (
         "eval_cer"
         if candidate.metric_for_best_model.strip().lower() == "cer"
@@ -126,6 +130,7 @@ def build_training_arguments(
         "logging_steps": max(1, candidate.logging_steps),
         "report_to": [],
         "disable_tqdm": False,
+        "ddp_find_unused_parameters": False if execution_backend_value == "ddp" else None,
     }
     if max_steps is not None:
         kwargs["max_steps"] = max_steps

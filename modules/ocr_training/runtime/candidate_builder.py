@@ -5,11 +5,12 @@ from dataclasses import dataclass
 
 from modules.ocr_training.runtime.strategy_catalog import (
     MANUAL_DEFAULTS,
+    preferred_auto_strategies,
     resolve_finetune_strategy,
     resolve_strategy_allowlist,
-    strategy_is_auto_admissible,
 )
 from modules.ocr_training.schemas import (
+    ExecutionBackend,
     FinetuneStrategy,
     HardwareProfile,
     SuryaTrainConfig,
@@ -115,6 +116,7 @@ def _gradient_checkpointing_candidates(
 def _materialize_candidate(
     *,
     config: SuryaTrainConfig,
+    profile: HardwareProfile,
     strategy: FinetuneStrategy,
     batch_size: int,
     grad_accum: int,
@@ -132,6 +134,11 @@ def _materialize_candidate(
             workers=workers,
             gradient_checkpointing=gradient_checkpointing,
         ),
+        execution_backend=ExecutionBackend(profile.execution_backend or "single"),
+        world_size=max(1, int(profile.distributed_world_size)),
+        effective_global_batch_size=batch_size
+        * grad_accum
+        * max(1, int(profile.distributed_world_size)),
         finetune_strategy=strategy,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=config.per_device_eval_batch_size,
@@ -169,14 +176,13 @@ def build_training_candidates(
 ) -> list[TrainingCandidate]:
     """Build the ordered candidate list for adaptive training."""
     allowlist = resolve_strategy_allowlist(config.strategy_allowlist)
+    strategies = preferred_auto_strategies(profile, allowlist)
     candidates: list[TrainingCandidate] = []
     worker_candidates = _worker_candidates(profile, constraints)
     sequence_candidates = _sequence_candidates(constraints.sequence_ceiling)
     batch_candidates = _batch_candidates(constraints.batch_ceiling)
 
-    for strategy in allowlist:
-        if not strategy_is_auto_admissible(profile, strategy):
-            continue
+    for strategy in strategies:
         checkpointing_candidates = _gradient_checkpointing_candidates(profile, strategy)
         for workers in worker_candidates:
             for sequence_length in sequence_candidates:
@@ -189,6 +195,7 @@ def build_training_candidates(
                         candidates.append(
                             _materialize_candidate(
                                 config=config,
+                                profile=profile,
                                 strategy=strategy,
                                 batch_size=batch_size,
                                 grad_accum=grad_accum,
@@ -207,6 +214,13 @@ def materialize_manual_candidate(config: SuryaTrainConfig) -> TrainingCandidate:
     )
     return TrainingCandidate(
         candidate_id="manual",
+        execution_backend=ExecutionBackend(config.execution_backend),
+        world_size=max(1, int(config.distributed_world_size or 1)),
+        effective_global_batch_size=int(
+            config.per_device_train_batch_size or MANUAL_DEFAULTS["per_device_train_batch_size"]
+        )
+        * int(config.gradient_accumulation_steps or MANUAL_DEFAULTS["gradient_accumulation_steps"])
+        * max(1, int(config.distributed_world_size or 1)),
         finetune_strategy=strategy,
         per_device_train_batch_size=int(
             config.per_device_train_batch_size or MANUAL_DEFAULTS["per_device_train_batch_size"]

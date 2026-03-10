@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from modules.ocr_training.adapters.berana_gold import validate_berana_gold_inputs
+from modules.ocr_training.distributed.context import torchrun_is_active
 from modules.ocr_training.fidel_extract import extract_fidel
 from modules.ocr_training.schemas import SplitConfig, SuryaTrainConfig, TrainMode
 from modules.ocr_training.surya_dataset import build_surya_dataset
@@ -55,6 +61,102 @@ def _resolve_train_output_dir(
     dataset_stem = _dataset_run_stem(dataset_dir)
     run_stem = f"{dataset_stem}_{mode.value}"
     return next_versioned_dir(Path("output/ocr_training_runs"), run_stem)
+
+
+def _cli_is_rank_zero() -> bool:
+    rank = os.environ.get("RANK", "0").strip()
+    return not rank.isdigit() or int(rank) == 0
+
+
+def _visible_cuda_device_count() -> int:
+    """Infer the number of CUDA devices visible to the current process."""
+    visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if visible_devices is not None:
+        tokens = [token.strip() for token in visible_devices.split(",") if token.strip()]
+        if tokens:
+            return len(tokens)
+    try:
+        import torch
+    except ModuleNotFoundError:
+        return 0
+    if not torch.cuda.is_available():
+        return 0
+    return int(torch.cuda.device_count())
+
+
+def _torchrun_entrypoint() -> list[str]:
+    """Return the launcher prefix for a torchrun-style distributed execution."""
+    torchrun_path = shutil.which("torchrun")
+    if torchrun_path:
+        return [torchrun_path]
+    return [sys.executable, "-m", "torch.distributed.run"]
+
+
+def _strip_flag(argv: list[str], flag: str) -> list[str]:
+    """Return argv with one boolean flag removed."""
+    return [value for value in argv if value != flag]
+
+
+def _ensure_option(argv: list[str], *, option: str, value: str) -> list[str]:
+    """Append one CLI option/value pair if the option is not already present."""
+    for token in argv:
+        if token == option or token.startswith(f"{option}="):
+            return argv
+    return [*argv, option, value]
+
+
+def _build_multi_gpu_launch_command(
+    *,
+    argv: list[str],
+    nproc_per_node: int,
+    resolved_output_dir: Path,
+) -> list[str]:
+    """Construct the internal torchrun relaunch command for multi-GPU training."""
+    forwarded = _strip_flag(_strip_flag(argv, "--multi-gpu"), "--no-multi-gpu")
+    forwarded = _ensure_option(
+        forwarded,
+        option="--output-dir",
+        value=str(resolved_output_dir),
+    )
+    return [
+        *_torchrun_entrypoint(),
+        "--standalone",
+        f"--nproc_per_node={nproc_per_node}",
+        str(Path(sys.argv[0]).resolve()),
+        *forwarded,
+    ]
+
+
+def _maybe_relaunch_multi_gpu(
+    *,
+    multi_gpu: bool,
+    execution_backend: str,
+    resolved_output_dir: Path,
+) -> None:
+    """Relaunch the current train command under torchrun when requested."""
+    if not multi_gpu or torchrun_is_active():
+        return
+    normalized_backend = execution_backend.strip().lower()
+    if normalized_backend == "single":
+        raise typer.BadParameter("`--multi-gpu` is incompatible with `--execution-backend single`.")
+    nproc_per_node = _visible_cuda_device_count()
+    if nproc_per_node < 2:
+        raise typer.BadParameter(
+            "`--multi-gpu` requires at least 2 visible CUDA devices on this host."
+        )
+    command = _build_multi_gpu_launch_command(
+        argv=sys.argv[1:],
+        nproc_per_node=nproc_per_node,
+        resolved_output_dir=resolved_output_dir,
+    )
+    if _cli_is_rank_zero():
+        log.info(
+            "Launching multi-GPU Surya training with %s ranks via: %s",
+            nproc_per_node,
+            shlex.join(command),
+        )
+    completed = subprocess.run(command, check=False, env=os.environ.copy())
+    raise typer.Exit(code=completed.returncode)
 
 
 @app.command("extract-fidel")
@@ -255,6 +357,21 @@ def cli_train_surya(
         int,
         typer.Option("--max-replans"),
     ] = 1,
+    multi_gpu: Annotated[
+        bool,
+        typer.Option(
+            "--multi-gpu/--single-gpu",
+            help="Use all visible local GPUs and relaunch under torchrun automatically.",
+        ),
+    ] = False,
+    execution_backend: Annotated[
+        str,
+        typer.Option("--execution-backend", help="Advanced override: auto|single|ddp"),
+    ] = "auto",
+    ddp_backend: Annotated[
+        str,
+        typer.Option("--ddp-backend", help="Advanced override for distributed backend: nccl|gloo"),
+    ] = "nccl",
     per_device_train_batch_size: Annotated[
         int | None,
         typer.Option("--per-device-train-batch-size"),
@@ -343,7 +460,7 @@ def cli_train_surya(
         raise typer.BadParameter("--mode must be one of: auto, manual") from exc
     if normalized_mode == TrainMode.AUTO and finetune_strategy == "full":
         raise typer.BadParameter("`full` finetuning is manual-only. Use `--mode manual`.")
-    if normalized_mode == TrainMode.AUTO:
+    if normalized_mode == TrainMode.AUTO and _cli_is_rank_zero():
         log.info(
             "Auto mode treats batch, grad accumulation, sequence length, and worker flags as planner ceilings."
         )
@@ -352,8 +469,13 @@ def cli_train_surya(
         output_dir=output_dir,
         mode=normalized_mode,
     )
-    if output_dir is None:
+    if output_dir is None and _cli_is_rank_zero():
         log.info("Resolved training output_dir=%s", resolved_output_dir)
+    _maybe_relaunch_multi_gpu(
+        multi_gpu=multi_gpu,
+        execution_backend=execution_backend,
+        resolved_output_dir=resolved_output_dir,
+    )
 
     cfg = SuryaTrainConfig(
         mode=normalized_mode,
@@ -365,6 +487,8 @@ def cli_train_surya(
         target_vram_utilization=target_vram_utilization,
         strategy_allowlist=strategy_allowlist,
         max_replans=max_replans,
+        execution_backend=execution_backend,
+        ddp_backend=ddp_backend,
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=per_device_eval_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -406,7 +530,8 @@ def cli_train_surya(
         log.error("train-surya failed: %s", exc)
         raise typer.Exit(code=1) from exc
 
-    log.info("train-surya complete status=%s", result["status"])
+    if _cli_is_rank_zero():
+        log.info("train-surya complete status=%s", result["status"])
 
 
 @app.command("evaluate-surya")

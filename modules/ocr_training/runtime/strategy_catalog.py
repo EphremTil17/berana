@@ -41,3 +41,20 @@ def strategy_is_auto_admissible(profile: HardwareProfile, strategy: FinetuneStra
     if profile.total_vram_mb is None:
         return False
     return profile.total_vram_mb >= 16384 and profile.supports_fp16
+
+
+def preferred_auto_strategies(
+    profile: HardwareProfile,
+    allowlist: list[FinetuneStrategy],
+) -> list[FinetuneStrategy]:
+    """Choose the adapter strategy set auto mode should actually benchmark."""
+    normalized = [
+        strategy for strategy in allowlist if strategy_is_auto_admissible(profile, strategy)
+    ]
+    if not normalized:
+        return []
+    if FinetuneStrategy.LORA in normalized and (profile.total_vram_mb or 0) >= 24576:
+        return [FinetuneStrategy.LORA]
+    if FinetuneStrategy.QLORA in normalized:
+        return [FinetuneStrategy.QLORA]
+    return normalized[:1]

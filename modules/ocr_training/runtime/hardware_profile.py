@@ -56,6 +56,9 @@ def _run_nvidia_smi_query(*query_args: str) -> list[str]:
 
 def _detect_selected_gpu_index(torch_module) -> int:
     """Resolve the active GPU index from CUDA visibility or torch state."""
+    local_rank = os.environ.get("LOCAL_RANK", "").strip()
+    if local_rank.isdigit():
+        return int(local_rank)
     visible_devices = os.environ.get("CUDA_VISIBLE_DEVICES", "").strip()
     if visible_devices:
         first_token = visible_devices.split(",")[0].strip()
@@ -198,13 +201,20 @@ def enforce_gpu_preflight(torch_module, foreign_usage_threshold_ratio: float) ->
     )
 
 
-def detect_hardware_profile(torch_module) -> HardwareProfile:
+def detect_hardware_profile(
+    torch_module,
+    *,
+    execution_backend: str = "single",
+    distributed_world_size: int = 1,
+) -> HardwareProfile:
     """Create a normalized single-host hardware profile."""
     cpu_count = os.cpu_count() or 1
     if not torch_module.cuda.is_available():
         return HardwareProfile(
             device_type="cpu",
             cuda_device_count=0,
+            execution_backend=execution_backend,
+            distributed_world_size=distributed_world_size,
             cpu_count=cpu_count,
             system_ram_mb=_system_ram_mb(),
             output_root=str(settings.OUTPUT_DIR),
@@ -234,6 +244,8 @@ def detect_hardware_profile(torch_module) -> HardwareProfile:
     return HardwareProfile(
         device_type="cuda",
         cuda_device_count=int(torch_module.cuda.device_count()),
+        execution_backend=execution_backend,
+        distributed_world_size=distributed_world_size,
         gpu_index=selected_index,
         gpu_name=snapshot.gpu_name if snapshot else device_name,
         gpu_uuid=snapshot.gpu_uuid if snapshot else None,

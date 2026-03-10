@@ -44,6 +44,14 @@ class TrainMode(StrEnum):
     MANUAL = "manual"
 
 
+class ExecutionBackend(StrEnum):
+    """Supported single-node execution backends."""
+
+    AUTO = "auto"
+    SINGLE = "single"
+    DDP = "ddp"
+
+
 class FinetuneStrategy(StrEnum):
     """Supported Surya finetuning strategies."""
 
@@ -122,6 +130,9 @@ class SuryaTrainConfig(BaseModel):
     """Surya finetuning runtime configuration."""
 
     mode: TrainMode = TrainMode.AUTO
+    execution_backend: ExecutionBackend = ExecutionBackend.AUTO
+    ddp_backend: str = "nccl"
+    distributed_world_size: int = 1
     seed: int = 42
     train_fraction: float = 1.0
     eval_fraction: float = 1.0
@@ -221,6 +232,8 @@ class HardwareProfile(BaseModel):
     schema_version: str = Field(default="1.0", pattern=r"^1\.0$")
     device_type: str
     cuda_device_count: int
+    execution_backend: str | None = None
+    distributed_world_size: int = 1
     gpu_index: int | None = None
     gpu_name: str | None = None
     gpu_uuid: str | None = None
@@ -243,6 +256,9 @@ class TrainingCandidate(BaseModel):
 
     schema_version: str = Field(default="1.0", pattern=r"^1\.0$")
     candidate_id: str
+    execution_backend: ExecutionBackend = ExecutionBackend.SINGLE
+    world_size: int = 1
+    effective_global_batch_size: int = 1
     finetune_strategy: FinetuneStrategy
     per_device_train_batch_size: int
     per_device_eval_batch_size: int | None = None
@@ -280,6 +296,9 @@ class CandidateResult(BaseModel):
 
     schema_version: str = Field(default="1.0", pattern=r"^1\.0$")
     candidate_id: str
+    execution_backend: str | None = None
+    world_size: int = 1
+    effective_global_batch_size: int | None = None
     status: CandidateStatus
     effective_samples_per_second: float | None = None
     optimizer_step_seconds: float | None = None

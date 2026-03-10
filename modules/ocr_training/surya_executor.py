@@ -46,8 +46,12 @@ from modules.ocr_training.surya_training_args import (
 )
 
 
-def _safe_save_training_bundle(*, model, processor, output_dir: Path, logger) -> None:
+def _safe_save_training_bundle(
+    *, model, processor, output_dir: Path, logger, is_rank_zero: bool = True
+) -> None:
     """Persist model and processor artifacts without hard-failing on processor serialization."""
+    if not is_rank_zero:
+        return
     output_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(output_dir))
     if hasattr(processor, "save_pretrained"):
@@ -79,22 +83,26 @@ def _register_interrupted_training(
     original_train_count: int,
     config,
     logger,
+    distributed_context,
 ):
     """Persist interruption artifacts and registry metadata for a stopped run."""
     latest_checkpoint = resolve_latest_checkpoint(output_dir)
     emergency_dir = output_dir / "checkpoint-emergency"
-    emergency_dir.mkdir(parents=True, exist_ok=True)
     _safe_save_training_bundle(
         model=model,
         processor=processor,
         output_dir=emergency_dir,
         logger=logger,
+        is_rank_zero=distributed_context.is_rank_zero,
     )
-    trainer.save_state()
+    if distributed_context.is_rank_zero:
+        emergency_dir.mkdir(parents=True, exist_ok=True)
+        trainer.save_state()
     resume_state_path = write_resume_state(
         output_dir,
         status="interrupted",
         latest_checkpoint=latest_checkpoint or emergency_dir,
+        is_rank_zero=distributed_context.is_rank_zero,
     )
     return register_interrupted_finetune(
         run_key=run_key,
@@ -112,6 +120,7 @@ def _register_interrupted_training(
         original_train_count=original_train_count,
         train_fraction=float(config.train_fraction),
         train_subset_seed=int(config.seed),
+        is_rank_zero=distributed_context.is_rank_zero,
     )
 
 
@@ -136,6 +145,64 @@ def _resolve_effective_best_metric(*, candidate: TrainingCandidate, compute_metr
     return candidate, candidate.metric_for_best_model
 
 
+def _attach_training_callbacks(
+    *,
+    trainer,
+    runtime,
+    torch,
+    signal_state,
+    candidate: TrainingCandidate,
+    eval_enabled: bool,
+    checkpoint_metric_name: str,
+    planned_samples_per_second: float | None,
+    mode: TrainMode,
+    distributed_context,
+    logger,
+    epoch_logging_callback_cls,
+) -> None:
+    """Attach rank-safe training, eval, and guard callbacks to one trainer."""
+    if eval_enabled:
+        trainer.add_callback(
+            build_eval_interrupt_discard_callback(
+                signal_state,
+                runtime["TrainerCallback"],
+                logger,
+            )
+        )
+        if distributed_context.is_rank_zero:
+            trainer.add_callback(
+                BestCerCheckpointCallback(
+                    output_dir=Path(trainer.args.output_dir),
+                    metric_name=checkpoint_metric_name,
+                )
+            )
+        trainer.add_callback(
+            build_eval_cleanup_callback(
+                torch_module=torch,
+                callback_base=runtime["TrainerCallback"],
+            )
+        )
+    if candidate.verbose_epochs and distributed_context.is_rank_zero:
+        trainer.add_callback(epoch_logging_callback_cls())
+    trainer.add_callback(
+        VramPressureCallback(
+            callback_base=runtime["TrainerCallback"],
+            torch_module=torch,
+            usage_threshold_ratio=candidate.abort_vram_usage_ratio,
+            check_interval=max(1, candidate.logging_steps),
+        ).build()
+    )
+    if mode == TrainMode.AUTO:
+        trainer.add_callback(
+            ThroughputGuardCallback(
+                callback_base=runtime["TrainerCallback"],
+                candidate=candidate,
+                planned_samples_per_second=planned_samples_per_second,
+            ).build()
+        )
+    trainer.add_callback(build_interrupt_callback(signal_state, runtime["TrainerCallback"]))
+
+
 def benchmark_candidate(
     *,
     runtime: dict[str, Any],
@@ -144,6 +211,7 @@ def benchmark_candidate(
     config,
     train_rows: list[dict[str, str]],
     candidate: TrainingCandidate,
+    distributed_context,
     load_surya_training_stack,
     logger,
 ) -> CandidateResult:
@@ -224,6 +292,9 @@ def benchmark_candidate(
             status = CandidateStatus.VRAM_GUARD
         return CandidateResult(
             candidate_id=candidate.candidate_id,
+            execution_backend=candidate.execution_backend.value,
+            world_size=candidate.world_size,
+            effective_global_batch_size=candidate.effective_global_batch_size,
             status=status,
             reason=message,
             measured_steps=0,
@@ -264,12 +335,19 @@ def run_training_candidate(
     retry_count: int,
     planned_samples_per_second: float | None,
     mode: TrainMode,
+    distributed_context=None,
     load_surya_training_stack,
     logger,
     epoch_logging_callback_cls,
 ) -> dict[str, Any]:
     """Execute one selected candidate as the real training run."""
     torch = runtime["torch"]
+    if distributed_context is None:
+        distributed_context = type(
+            "_SingleProcessContext",
+            (),
+            {"is_rank_zero": True, "is_distributed": False},
+        )()
     if torch.cuda.is_available():
         with suppress(Exception):
             torch.cuda.synchronize()
@@ -310,7 +388,11 @@ def run_training_candidate(
         checkpoint=base_checkpoint,
         config=candidate_config,
     )
-    write_finetune_meta(output_dir, {**finetune_meta, **model_metadata})
+    write_finetune_meta(
+        output_dir,
+        {**finetune_meta, **model_metadata},
+        is_rank_zero=distributed_context.is_rank_zero,
+    )
     train_dataset = LocalSuryaOCRDataset(processor=processor, rows=train_rows, runtime=runtime)
     val_dataset = LocalSuryaOCRDataset(processor=processor, rows=val_rows, runtime=runtime)
     collator = SuryaOCRDataCollator(
@@ -351,45 +433,20 @@ def run_training_candidate(
         if eval_enabled and compute_metrics is not None
         else None,
     )
-    if eval_enabled:
-        trainer.add_callback(
-            build_eval_interrupt_discard_callback(
-                signal_state,
-                runtime["TrainerCallback"],
-                logger,
-            )
-        )
-        trainer.add_callback(
-            BestCerCheckpointCallback(
-                output_dir=output_dir,
-                metric_name=checkpoint_metric_name,
-            )
-        )
-        trainer.add_callback(
-            build_eval_cleanup_callback(
-                torch_module=torch,
-                callback_base=runtime["TrainerCallback"],
-            )
-        )
-    if candidate.verbose_epochs:
-        trainer.add_callback(epoch_logging_callback_cls())
-    trainer.add_callback(
-        VramPressureCallback(
-            callback_base=runtime["TrainerCallback"],
-            torch_module=torch,
-            usage_threshold_ratio=candidate.abort_vram_usage_ratio,
-            check_interval=max(1, candidate.logging_steps),
-        ).build()
+    _attach_training_callbacks(
+        trainer=trainer,
+        runtime=runtime,
+        torch=torch,
+        signal_state=signal_state,
+        candidate=candidate,
+        eval_enabled=eval_enabled,
+        checkpoint_metric_name=checkpoint_metric_name,
+        planned_samples_per_second=planned_samples_per_second,
+        mode=mode,
+        distributed_context=distributed_context,
+        logger=logger,
+        epoch_logging_callback_cls=epoch_logging_callback_cls,
     )
-    if mode == TrainMode.AUTO:
-        trainer.add_callback(
-            ThroughputGuardCallback(
-                callback_base=runtime["TrainerCallback"],
-                candidate=candidate,
-                planned_samples_per_second=planned_samples_per_second,
-            ).build()
-        )
-    trainer.add_callback(build_interrupt_callback(signal_state, runtime["TrainerCallback"]))
     result = None
     try:
         trainer.train(resume_from_checkpoint=str(latest_resume) if latest_resume else None)
@@ -411,6 +468,7 @@ def run_training_candidate(
                 original_train_count=original_train_count,
                 config=config,
                 logger=logger,
+                distributed_context=distributed_context,
             )
             return result
         _safe_save_training_bundle(
@@ -418,9 +476,11 @@ def run_training_candidate(
             processor=processor,
             output_dir=output_dir,
             logger=logger,
+            is_rank_zero=distributed_context.is_rank_zero,
         )
         latest_checkpoint = resolve_latest_checkpoint(output_dir)
-        write_resume_state(output_dir, status="completed", latest_checkpoint=latest_checkpoint)
+        if distributed_context.is_rank_zero:
+            write_resume_state(output_dir, status="completed", latest_checkpoint=latest_checkpoint)
         result = register_completed_finetune(
             run_key=run_key,
             output_dir=output_dir,
@@ -436,6 +496,7 @@ def run_training_candidate(
             original_train_count=original_train_count,
             train_fraction=float(config.train_fraction),
             train_subset_seed=int(config.seed),
+            is_rank_zero=distributed_context.is_rank_zero,
         )
     except KeyboardInterrupt:
         result = _register_interrupted_training(
@@ -455,6 +516,7 @@ def run_training_candidate(
             original_train_count=original_train_count,
             config=config,
             logger=logger,
+            distributed_context=distributed_context,
         )
     finally:
         del trainer

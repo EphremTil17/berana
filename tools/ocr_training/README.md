@@ -1,5 +1,8 @@
 # OCR Training Tool (FIDEL + Surya)
 
+This file documents the `tools/ocr_training.py` CLI surface. The implementation lives in
+`modules/ocr_training/`.
+
 Standalone training workflow entrypoint:
 
 ```bash
@@ -50,7 +53,15 @@ PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
   --dataloader-num-workers 8
 ```
 
-6. Evaluate holdout CER/WER:
+6. Run single-node multi-GPU training with the same command shape:
+```bash
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --mode auto \
+  --multi-gpu
+```
+
+7. Evaluate holdout CER/WER:
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py evaluate-surya \
   --run-dir output/ocr_training_runs/fidel_typed_synthetic_v01 \
@@ -78,6 +89,15 @@ PYTHONPATH=. .venv/bin/python tools/ocr_training.py evaluate-surya \
 - `inspect-surya-dataset` defaults to the `train` split, inspects `1024` deterministic rows, and reports local 8GB-friendly batch/grad-accum geometry by default.
 - `full` finetune is manual-only; auto mode never selects it.
 - Completed runs save adapter/base-model metadata so resume and `evaluate-surya` load the correct stack automatically.
+- Multi-GPU v1 is single-node only and expects a homogeneous CUDA host.
+- `--multi-gpu` relaunches the same CLI under `torchrun` automatically, using all visible local CUDA devices.
+- `--execution-backend` and `--ddp-backend` remain available as advanced overrides, but normal runs should use the unified `--multi-gpu` flag.
+- In multi-GPU mode, batch flags remain per-rank. Effective global batch is:
+  `per_device_train_batch_size * gradient_accumulation_steps * gpu_count`.
+- In multi-GPU auto mode, the planner evaluates per-rank settings, records effective global batch size in the selected config, and prefers configurations that stay within per-rank VRAM headroom instead of pushing into shared system memory.
+- In multi-GPU mode, only rank 0 writes run metadata, best-checkpoint pointers, reports, and final root artifacts.
+- Training-time eval remains available in multi-GPU mode, but `evaluate-surya` itself still runs as a standalone single-process command.
+- Docker templates must provide a shared writable workspace for all ranks plus NCCL-compatible CUDA drivers.
 - Adaptive runs persist:
   - `hardware_profile.json`
   - `autotune_plan.json`

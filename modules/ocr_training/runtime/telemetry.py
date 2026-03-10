@@ -231,9 +231,7 @@ class BenchmarkTelemetryCallback:
         throughput = None
         if callback._step_times:
             avg_step_time = sum(callback._step_times) / len(callback._step_times)
-            throughput = (
-                candidate.per_device_train_batch_size * candidate.gradient_accumulation_steps
-            ) / avg_step_time
+            throughput = candidate.effective_global_batch_size / avg_step_time
         average_loss = None
         if callback._losses:
             average_loss = sum(callback._losses) / len(callback._losses)
@@ -244,6 +242,9 @@ class BenchmarkTelemetryCallback:
             reason = "invalid_loss_or_gradients"
         return CandidateResult(
             candidate_id=candidate.candidate_id,
+            execution_backend=candidate.execution_backend.value,
+            world_size=candidate.world_size,
+            effective_global_batch_size=candidate.effective_global_batch_size,
             status=status,
             effective_samples_per_second=throughput,
             optimizer_step_seconds=avg_step_time,
@@ -314,9 +315,7 @@ class ThroughputGuardCallback:
                 if elapsed <= 0:
                     return control
                 observed_samples_per_second = (
-                    global_step
-                    * candidate.per_device_train_batch_size
-                    * candidate.gradient_accumulation_steps
+                    global_step * candidate.effective_global_batch_size
                 ) / elapsed
                 if observed_samples_per_second >= planned_samples_per_second * threshold_ratio:
                     return control

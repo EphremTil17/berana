@@ -36,6 +36,7 @@ def run_candidate_benchmarks(
     benchmark_fn: BenchmarkFn,
     planning_budget_minutes: int,
     output_dir: Path,
+    is_rank_zero: bool,
     logger,
 ) -> list[CandidateResult]:
     """Benchmark candidates until the planning budget is exhausted."""
@@ -69,7 +70,8 @@ def run_candidate_benchmarks(
         )
         results.append(result)
 
-    _write_candidate_results(output_dir / "candidate_results.jsonl", results)
+    if is_rank_zero:
+        _write_candidate_results(output_dir / "candidate_results.jsonl", results)
     return results
 
 
@@ -79,6 +81,7 @@ def select_best_candidate(
     candidate_results: list[CandidateResult],
     output_dir: Path,
     safe_peak_vram_mb: int | None = None,
+    is_rank_zero: bool = True,
 ) -> AutotuneSelection:
     """Choose the best admissible candidate by measured throughput."""
     candidate_by_id = {candidate.candidate_id: candidate for candidate in candidates}
@@ -116,13 +119,14 @@ def select_best_candidate(
         discarded_candidates=max(0, len(candidate_results) - len(valid_results)),
         selection_reason=selection_reason,
     )
-    atomic_write_json(
-        output_dir / "selected_training_config.json",
-        {
-            **selection.selected_candidate.model_dump(mode="json"),
-            "selection_reason": selection.selection_reason,
-            "measured_samples_per_second": winner.effective_samples_per_second,
-            "measured_peak_vram_mb": winner.peak_vram_mb,
-        },
-    )
+    if is_rank_zero:
+        atomic_write_json(
+            output_dir / "selected_training_config.json",
+            {
+                **selection.selected_candidate.model_dump(mode="json"),
+                "selection_reason": selection.selection_reason,
+                "measured_samples_per_second": winner.effective_samples_per_second,
+                "measured_peak_vram_mb": winner.peak_vram_mb,
+            },
+        )
     return selection

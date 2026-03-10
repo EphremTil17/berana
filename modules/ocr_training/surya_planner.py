@@ -44,6 +44,7 @@ def prepare_auto_training(
     train_rows,
     hardware_profile,
     benchmark_candidate,
+    is_rank_zero: bool,
     logger,
 ):
     """Plan and optionally benchmark adaptive candidates for the current host."""
@@ -69,6 +70,7 @@ def prepare_auto_training(
         candidates=candidate_pool,
         config=config,
         resumed_selection=existing_selected_candidate is not None,
+        is_rank_zero=is_rank_zero,
     )
     if existing_selected_candidate is not None:
         return (
@@ -99,6 +101,7 @@ def prepare_auto_training(
         ),
         planning_budget_minutes=config.planning_budget_minutes,
         output_dir=output_dir,
+        is_rank_zero=is_rank_zero,
         logger=logger,
     )
     selection = select_best_candidate(
@@ -106,6 +109,7 @@ def prepare_auto_training(
         candidate_results=candidate_results,
         output_dir=output_dir,
         safe_peak_vram_mb=_safe_peak_vram_budget_mb(hardware_profile, config),
+        is_rank_zero=is_rank_zero,
     )
     winner = next(
         result
@@ -115,15 +119,16 @@ def prepare_auto_training(
     selected_candidate = selection.selected_candidate.model_copy(
         update={"expected_samples_per_second": winner.effective_samples_per_second}
     )
-    atomic_write_json(
-        output_dir / "selected_training_config.json",
-        {
-            **selected_candidate.model_dump(mode="json"),
-            "selection_reason": selection.selection_reason,
-            "measured_samples_per_second": winner.effective_samples_per_second,
-            "measured_peak_vram_mb": winner.peak_vram_mb,
-        },
-    )
+    if is_rank_zero:
+        atomic_write_json(
+            output_dir / "selected_training_config.json",
+            {
+                **selected_candidate.model_dump(mode="json"),
+                "selection_reason": selection.selection_reason,
+                "measured_samples_per_second": winner.effective_samples_per_second,
+                "measured_peak_vram_mb": winner.peak_vram_mb,
+            },
+        )
     logger.info(
         "Adaptive planner selected candidate=%s strategy=%s throughput=%.4f samples/s peak_vram=%sMiB",
         selected_candidate.candidate_id,

@@ -43,9 +43,17 @@ def resolve_latest_checkpoint(output_dir: Path) -> Path | None:
     return checkpoints[-1]
 
 
-def write_resume_state(output_dir: Path, *, status: str, latest_checkpoint: Path | None) -> Path:
+def write_resume_state(
+    output_dir: Path,
+    *,
+    status: str,
+    latest_checkpoint: Path | None,
+    is_rank_zero: bool = True,
+) -> Path:
     """Persist deterministic resume metadata for interrupted runs."""
     resume_path = output_dir / "resume_state.json"
+    if not is_rank_zero:
+        return resume_path
     atomic_write_json(
         resume_path,
         {

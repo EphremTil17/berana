@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -16,8 +17,12 @@ def finetune_meta_path(run_dir: Path) -> Path:
     return run_dir / "finetune_meta.json"
 
 
-def write_finetune_meta(run_dir: Path, payload: dict[str, Any]) -> Path:
+def write_finetune_meta(
+    run_dir: Path, payload: dict[str, Any], *, is_rank_zero: bool = True
+) -> Path | None:
     """Persist adapter/base-model metadata for resume and evaluation."""
+    if not is_rank_zero:
+        return None
     meta_path = finetune_meta_path(run_dir)
     atomic_write_json(meta_path, payload)
     return meta_path
@@ -36,8 +41,12 @@ def candidate_output_dir(output_dir: Path, candidate: TrainingCandidate) -> Path
     return output_dir / ".autotune" / candidate.candidate_id
 
 
-def write_hardware_profile(output_dir: Path, profile: HardwareProfile) -> Path:
+def write_hardware_profile(
+    output_dir: Path, profile: HardwareProfile, *, is_rank_zero: bool = True
+) -> Path | None:
     """Persist normalized hardware profile for this run."""
+    if not is_rank_zero:
+        return None
     path = output_dir / "hardware_profile.json"
     atomic_write_json(path, profile.model_dump(mode="json"))
     return path
@@ -51,8 +60,11 @@ def write_autotune_plan(
     candidates: list[TrainingCandidate],
     config,
     resumed_selection: bool,
+    is_rank_zero: bool = True,
 ) -> Path:
     """Persist adaptive planner inputs before benchmarking or execution."""
+    if not is_rank_zero:
+        return output_dir / "autotune_plan.json"
     notes: list[str] = []
     if config.per_device_train_batch_size is not None:
         notes.append("per_device_train_batch_size treated as auto ceiling")
@@ -104,18 +116,21 @@ def cleanup_candidate_scratch(output_dir: Path, candidate: TrainingCandidate) ->
     """Remove one benchmark candidate scratch directory if it exists."""
     path = candidate_output_dir(output_dir, candidate)
     if path.exists():
-        shutil.rmtree(path)
+        with suppress(FileNotFoundError):
+            shutil.rmtree(path)
 
 
 def reset_training_outputs(output_dir: Path) -> None:
     """Remove generated training artifacts before a deterministic retry."""
     for checkpoint_dir in output_dir.glob("checkpoint-*"):
         if checkpoint_dir.is_dir():
-            shutil.rmtree(checkpoint_dir)
+            with suppress(FileNotFoundError):
+                shutil.rmtree(checkpoint_dir)
     for relative in (".autotune", "weights"):
         target = output_dir / relative
         if target.exists():
-            shutil.rmtree(target)
+            with suppress(FileNotFoundError):
+                shutil.rmtree(target)
     for relative in (
         "resume_state.json",
         "best_model_meta.json",
@@ -124,7 +139,8 @@ def reset_training_outputs(output_dir: Path) -> None:
     ):
         target = output_dir / relative
         if target.exists():
-            target.unlink()
+            with suppress(FileNotFoundError):
+                target.unlink()
 
 
 def register_completed_finetune(
@@ -143,8 +159,17 @@ def register_completed_finetune(
     original_train_count: int,
     train_fraction: float,
     train_subset_seed: int,
+    is_rank_zero: bool = True,
 ) -> dict[str, Any]:
     """Register a completed finetune stage with planner metadata."""
+    if not is_rank_zero:
+        return {
+            "status": "completed",
+            "mode": mode.value,
+            "selected_strategy": selected_candidate.finetune_strategy.value,
+            "selected_candidate_id": selected_candidate.candidate_id,
+            "latest_checkpoint": str(latest_checkpoint) if latest_checkpoint else None,
+        }
     artifacts = {
         "resume_state": relative_to_base(output_dir / "resume_state.json"),
         "finetune_meta": relative_to_base(finetune_meta_path(output_dir)),
@@ -213,8 +238,16 @@ def register_interrupted_finetune(
     original_train_count: int,
     train_fraction: float,
     train_subset_seed: int,
+    is_rank_zero: bool = True,
 ) -> dict[str, Any]:
     """Register an interrupted finetune stage with planner metadata."""
+    if not is_rank_zero:
+        return {
+            "status": "interrupted",
+            "mode": mode.value,
+            "selected_strategy": selected_candidate.finetune_strategy.value,
+            "selected_candidate_id": selected_candidate.candidate_id,
+        }
     artifacts = {
         "resume_state": relative_to_base(resume_state_path),
         "emergency_checkpoint": relative_to_base(emergency_dir),
