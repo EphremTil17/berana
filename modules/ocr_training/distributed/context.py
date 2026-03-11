@@ -142,7 +142,13 @@ def initialize_distributed_context(
         and torch_module.distributed.is_available()
         and not torch_module.distributed.is_initialized()
     ):
-        torch_module.distributed.init_process_group(backend=ddp_backend)
+        try:
+            torch_module.distributed.init_process_group(
+                backend=ddp_backend,
+                device_id=local_rank if torch_module.cuda.is_available() else None,
+            )
+        except TypeError:
+            torch_module.distributed.init_process_group(backend=ddp_backend)
     device = f"cuda:{local_rank}" if torch_module.cuda.is_available() else "cpu"
     return DistributedContext(
         execution_backend="ddp",
@@ -171,4 +177,10 @@ def maybe_barrier(*, torch_module, context: DistributedContext) -> None:
     if not context.is_distributed:
         return
     if hasattr(torch_module, "distributed") and torch_module.distributed.is_initialized():
+        try:
+            if torch_module.cuda.is_available():
+                torch_module.distributed.barrier(device_ids=[context.local_rank])
+                return
+        except TypeError:
+            pass
         torch_module.distributed.barrier()

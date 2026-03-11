@@ -1,13 +1,22 @@
+import os
 from pathlib import Path
+
+from typer.testing import CliRunner
 
 from modules.ocr_training.schemas import TrainMode
 from tools.ocr_training import (
+    _apply_training_env_defaults,
     _build_multi_gpu_launch_command,
     _dataset_run_stem,
+    _merge_pytorch_alloc_conf,
     _resolve_train_output_dir,
     _strip_version_suffix,
+    _training_launch_env,
     _visible_cuda_device_count,
+    app,
 )
+
+runner = CliRunner()
 
 
 def test_strip_version_suffix_removes_trailing_vnn():
@@ -89,3 +98,61 @@ def test_build_multi_gpu_launch_command_strips_flag_and_pins_output_dir(
     assert command[:3] == ["torchrun", "--standalone", "--nproc_per_node=4"]
     assert "--multi-gpu" not in command
     assert command[-2:] == ["--output-dir", str(tmp_path / "run_dir")]
+
+
+def test_merge_pytorch_alloc_conf_adds_expandable_segments():
+    assert _merge_pytorch_alloc_conf(None) == "expandable_segments:True"
+    assert (
+        _merge_pytorch_alloc_conf("garbage_collection_threshold:0.8")
+        == "garbage_collection_threshold:0.8,expandable_segments:True"
+    )
+    assert (
+        _merge_pytorch_alloc_conf("expandable_segments:False,max_split_size_mb:256")
+        == "expandable_segments:True,max_split_size_mb:256"
+    )
+
+
+def test_training_launch_env_preserves_existing_env(monkeypatch):
+    monkeypatch.setenv("PYTORCH_ALLOC_CONF", "max_split_size_mb:256")
+
+    env = _training_launch_env()
+
+    assert env["PYTORCH_ALLOC_CONF"] == "max_split_size_mb:256,expandable_segments:True"
+
+
+def test_apply_training_env_defaults_sets_allocator(monkeypatch):
+    monkeypatch.delenv("PYTORCH_ALLOC_CONF", raising=False)
+
+    _apply_training_env_defaults()
+
+    assert os.environ["PYTORCH_ALLOC_CONF"] == "expandable_segments:True"
+
+
+def test_visualize_surya_run_command_generates_report(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    eval_dir = run_dir / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "trainer_state.json").write_text(
+        '{"log_history": [{"step": 10, "loss": 1.2, "epoch": 0.1}]}',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["visualize-surya-run", "--run-dir", str(run_dir)])
+
+    assert result.exit_code == 0
+    assert (eval_dir / "training_report.md").exists()
+
+
+def test_monitor_surya_run_command_reports_summary(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    eval_dir = run_dir / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "trainer_state.json").write_text(
+        '{"log_history": [{"step": 10, "loss": 1.2, "epoch": 0.1}, {"step": 20, "eval_cer": 0.3, "eval_wer": 0.5, "epoch": 0.2}]}',
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["monitor-surya-run", "--run-dir", str(run_dir)])
+
+    assert result.exit_code == 0
+    assert "monitor-surya-run selection_metric" in result.stdout

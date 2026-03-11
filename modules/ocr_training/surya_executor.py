@@ -7,8 +7,14 @@ from typing import Any
 
 from modules.ocr_training.checkpointing import (
     BestCerCheckpointCallback,
+    BestWerCheckpointCallback,
+    PlateauWarningCallback,
+    TrainingArtifactsCallback,
     TrainingSignalState,
+    TrainingTerminationCoordinator,
     install_signal_handlers,
+    observe_training_stop,
+    request_training_stop,
     resolve_latest_checkpoint,
     write_resume_state,
 )
@@ -39,6 +45,7 @@ from modules.ocr_training.surya_patches import (
     build_preprocess_logits_for_metrics,
     compute_metrics_factory,
 )
+from modules.ocr_training.surya_reports import write_training_report_bundle
 from modules.ocr_training.surya_training_args import (
     benchmark_subset_rows,
     build_training_arguments,
@@ -104,7 +111,7 @@ def _register_interrupted_training(
         latest_checkpoint=latest_checkpoint or emergency_dir,
         is_rank_zero=distributed_context.is_rank_zero,
     )
-    return register_interrupted_finetune(
+    result = register_interrupted_finetune(
         run_key=run_key,
         output_dir=output_dir,
         attempts=attempts,
@@ -122,6 +129,10 @@ def _register_interrupted_training(
         train_subset_seed=int(config.seed),
         is_rank_zero=distributed_context.is_rank_zero,
     )
+    if distributed_context.is_rank_zero:
+        with suppress(Exception):
+            write_training_report_bundle(run_dir=output_dir)
+    return result
 
 
 def _resolve_effective_best_metric(*, candidate: TrainingCandidate, compute_metrics, logger):
@@ -157,10 +168,26 @@ def _attach_training_callbacks(
     planned_samples_per_second: float | None,
     mode: TrainMode,
     distributed_context,
+    termination_coordinator,
     logger,
     epoch_logging_callback_cls,
 ) -> None:
     """Attach rank-safe training, eval, and guard callbacks to one trainer."""
+    trainer_args = getattr(trainer, "args", None)
+    if trainer_args is None:
+        trainer_args = getattr(trainer, "kwargs", {}).get("args")
+    trainer_output_dir = Path(str(trainer_args.output_dir))
+
+    def _request_runtime_stop(message: str) -> None:
+        request_training_stop(
+            signal_state,
+            reason=message,
+            stop_type="runtime",
+            save_checkpoint=False,
+            coordinator=termination_coordinator,
+            rank=getattr(distributed_context, "rank", 0),
+        )
+
     if eval_enabled:
         trainer.add_callback(
             build_eval_interrupt_discard_callback(
@@ -172,35 +199,56 @@ def _attach_training_callbacks(
         if distributed_context.is_rank_zero:
             trainer.add_callback(
                 BestCerCheckpointCallback(
-                    output_dir=Path(trainer.args.output_dir),
+                    output_dir=trainer_output_dir,
                     metric_name=checkpoint_metric_name,
                 )
             )
+            if checkpoint_metric_name != "eval_wer":
+                trainer.add_callback(
+                    BestWerCheckpointCallback(
+                        output_dir=trainer_output_dir,
+                        metric_name="eval_wer",
+                        weights_subdir="best_checkpoint_wer",
+                        meta_filename="best_wer_model_meta.json",
+                    )
+                )
+            trainer.add_callback(PlateauWarningCallback(trainer_output_dir))
         trainer.add_callback(
             build_eval_cleanup_callback(
                 torch_module=torch,
                 callback_base=runtime["TrainerCallback"],
             )
         )
+    if distributed_context.is_rank_zero:
+        trainer.add_callback(TrainingArtifactsCallback(trainer_output_dir))
     if candidate.verbose_epochs and distributed_context.is_rank_zero:
         trainer.add_callback(epoch_logging_callback_cls())
-    trainer.add_callback(
-        VramPressureCallback(
-            callback_base=runtime["TrainerCallback"],
-            torch_module=torch,
-            usage_threshold_ratio=candidate.abort_vram_usage_ratio,
-            check_interval=max(1, candidate.logging_steps),
-        ).build()
-    )
+    if not candidate.allow_ram_spillover:
+        trainer.add_callback(
+            VramPressureCallback(
+                callback_base=runtime["TrainerCallback"],
+                torch_module=torch,
+                usage_threshold_ratio=candidate.abort_vram_usage_ratio,
+                check_interval=max(1, candidate.logging_steps),
+                on_trigger=_request_runtime_stop,
+            ).build()
+        )
     if mode == TrainMode.AUTO:
         trainer.add_callback(
             ThroughputGuardCallback(
                 callback_base=runtime["TrainerCallback"],
                 candidate=candidate,
                 planned_samples_per_second=planned_samples_per_second,
+                on_trigger=_request_runtime_stop,
             ).build()
         )
-    trainer.add_callback(build_interrupt_callback(signal_state, runtime["TrainerCallback"]))
+    trainer.add_callback(
+        build_interrupt_callback(
+            signal_state,
+            runtime["TrainerCallback"],
+            termination_coordinator=termination_coordinator,
+        )
+    )
 
 
 def benchmark_candidate(
@@ -234,6 +282,10 @@ def benchmark_candidate(
     training_args = None
     trainer = None
     telemetry = None
+    signal_state = TrainingSignalState()
+    install_signal_handlers(signal_state)
+    termination_coordinator = TrainingTerminationCoordinator(benchmark_dir)
+    termination_coordinator.clear()
     try:
         model, processor, _metadata = load_surya_training_stack(
             runtime,
@@ -272,17 +324,44 @@ def benchmark_candidate(
             measure_steps=config.measure_steps_per_candidate,
         ).build()
         trainer.add_callback(telemetry)
+        if not candidate.allow_ram_spillover:
+            trainer.add_callback(
+                VramPressureCallback(
+                    callback_base=runtime["TrainerCallback"],
+                    torch_module=torch,
+                    usage_threshold_ratio=candidate.abort_vram_usage_ratio,
+                    check_interval=1,
+                    on_trigger=lambda message: request_training_stop(
+                        signal_state,
+                        reason=message,
+                        stop_type="runtime",
+                        save_checkpoint=False,
+                        coordinator=termination_coordinator,
+                        rank=getattr(distributed_context, "rank", 0),
+                    ),
+                ).build()
+            )
         trainer.add_callback(
-            VramPressureCallback(
-                callback_base=runtime["TrainerCallback"],
-                torch_module=torch,
-                usage_threshold_ratio=candidate.abort_vram_usage_ratio,
-                check_interval=1,
-            ).build()
+            build_interrupt_callback(
+                signal_state,
+                runtime["TrainerCallback"],
+                termination_coordinator=termination_coordinator,
+            )
         )
         trainer.train()
+        observe_training_stop(signal_state, coordinator=termination_coordinator)
+        if signal_state.runtime_error_message is not None:
+            raise RuntimeError(signal_state.runtime_error_message)
         return telemetry.summarize()
     except RuntimeError as exc:
+        request_training_stop(
+            signal_state,
+            reason=str(exc),
+            stop_type="runtime",
+            save_checkpoint=False,
+            coordinator=termination_coordinator,
+            rank=getattr(distributed_context, "rank", 0),
+        )
         message = str(exc)
         lowered = message.lower()
         status = CandidateStatus.ERROR
@@ -318,7 +397,7 @@ def benchmark_candidate(
         cleanup_candidate_scratch(output_dir, candidate)
 
 
-def run_training_candidate(
+def run_training_candidate(  # noqa: C901
     *,
     runtime: dict[str, Any],
     run_key: str,
@@ -422,6 +501,8 @@ def run_training_candidate(
     )
     signal_state = TrainingSignalState()
     install_signal_handlers(signal_state)
+    termination_coordinator = TrainingTerminationCoordinator(output_dir)
+    termination_coordinator.clear()
     trainer = runtime["Trainer"](
         model=model,
         args=training_args,
@@ -444,12 +525,16 @@ def run_training_candidate(
         planned_samples_per_second=planned_samples_per_second,
         mode=mode,
         distributed_context=distributed_context,
+        termination_coordinator=termination_coordinator,
         logger=logger,
         epoch_logging_callback_cls=epoch_logging_callback_cls,
     )
     result = None
     try:
         trainer.train(resume_from_checkpoint=str(latest_resume) if latest_resume else None)
+        observe_training_stop(signal_state, coordinator=termination_coordinator)
+        if signal_state.runtime_error_message is not None:
+            raise RuntimeError(signal_state.runtime_error_message)
         if signal_state.interrupted:
             result = _register_interrupted_training(
                 trainer=trainer,
@@ -498,7 +583,28 @@ def run_training_candidate(
             train_subset_seed=int(config.seed),
             is_rank_zero=distributed_context.is_rank_zero,
         )
+        if distributed_context.is_rank_zero:
+            with suppress(Exception):
+                write_training_report_bundle(run_dir=output_dir)
+    except RuntimeError as exc:
+        request_training_stop(
+            signal_state,
+            reason=str(exc),
+            stop_type="runtime",
+            save_checkpoint=False,
+            coordinator=termination_coordinator,
+            rank=getattr(distributed_context, "rank", 0),
+        )
+        raise
     except KeyboardInterrupt:
+        request_training_stop(
+            signal_state,
+            reason="keyboard_interrupt",
+            stop_type="signal",
+            save_checkpoint=True,
+            coordinator=termination_coordinator,
+            rank=getattr(distributed_context, "rank", 0),
+        )
         result = _register_interrupted_training(
             trainer=trainer,
             model=model,

@@ -1,5 +1,3 @@
-# ruff: noqa: RUF001
-
 import re
 import unicodedata
 
@@ -38,10 +36,14 @@ def normalize_ethiopic_text(text: str, strict_punctuation: bool = True) -> str:
     # 2. Trim surrounding whitespace
     text = text.strip()
 
-    # 3. Collapse internal spaces
+    # 3. Normalize punctuation to spaces to approximate JiWER-style punctuation handling.
+    if strict_punctuation:
+        text = "".join(" " if unicodedata.category(char).startswith("P") else char for char in text)
+
+    # 4. Collapse internal spaces
     text = re.sub(r"\s+", " ", text)
 
-    # 4. Map known confusing Ethiopic equivalents
+    # 5. Map known confusing Ethiopic equivalents
     for variant, canonical in ETHIOPIC_EQUIVALENTS.items():
         text = text.replace(variant, canonical)
 

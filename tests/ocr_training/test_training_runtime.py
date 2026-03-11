@@ -1,7 +1,11 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from modules.ocr_training.checkpointing import TrainingSignalState
+from modules.ocr_training.checkpointing import (
+    TrainingSignalState,
+    TrainingTerminationCoordinator,
+    request_training_stop,
+)
 from modules.ocr_training.runtime.autotune_runner import select_best_candidate
 from modules.ocr_training.runtime.candidate_builder import (
     build_training_candidates,
@@ -13,7 +17,10 @@ from modules.ocr_training.runtime.execution_controller import (
 )
 from modules.ocr_training.runtime.hardware_profile import detect_hardware_profile
 from modules.ocr_training.runtime.strategy_catalog import strategy_is_auto_admissible
-from modules.ocr_training.runtime.telemetry import _combined_current_used_memory_mb
+from modules.ocr_training.runtime.telemetry import (
+    VramPressureCallback,
+    _combined_current_used_memory_mb,
+)
 from modules.ocr_training.schemas import (
     CandidateResult,
     CandidateStatus,
@@ -130,6 +137,36 @@ def test_build_training_candidates_respects_auto_constraints():
     assert max(candidate.per_device_train_batch_size for candidate in candidates) == 2
     assert {candidate.max_sequence_length for candidate in candidates} == {1024}
     assert max(candidate.dataloader_num_workers for candidate in candidates) == 8
+
+
+def test_build_training_candidates_propagates_allow_ram_spillover():
+    profile = HardwareProfile(
+        device_type="cuda",
+        cuda_device_count=1,
+        gpu_index=0,
+        gpu_name="RTX 5090",
+        total_vram_mb=32768,
+        free_vram_mb=30000,
+        supports_fp16=True,
+        supports_bf16=True,
+        cpu_count=28,
+    )
+    config = SuryaTrainConfig(
+        mode=TrainMode.AUTO,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        allow_ram_spillover=False,
+    )
+
+    constraints = derive_auto_constraints(config, profile)
+    candidates = build_training_candidates(
+        profile=profile,
+        config=config,
+        constraints=constraints,
+    )
+
+    assert candidates
+    assert all(candidate.allow_ram_spillover is False for candidate in candidates)
 
 
 def test_select_best_candidate_prefers_highest_throughput(tmp_path: Path):
@@ -484,6 +521,68 @@ def test_run_training_candidate_marks_signal_stop_as_interrupted(tmp_path: Path,
     assert (tmp_path / "resume_state.json").exists()
 
 
+def test_run_training_candidate_skips_vram_guard_when_ram_spillover_allowed(tmp_path: Path):
+    added_callbacks: list[object] = []
+    torch_stub = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: False,
+        )
+    )
+
+    class _Trainer:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def add_callback(self, callback):
+            added_callbacks.append(callback)
+            return None
+
+        def train(self, resume_from_checkpoint=None):
+            del resume_from_checkpoint
+            return None
+
+        def save_state(self):
+            return None
+
+    runtime = {
+        "torch": torch_stub,
+        "TrainingArguments": lambda **kwargs: SimpleNamespace(**kwargs),
+        "Trainer": _Trainer,
+        "TrainerCallback": object,
+        "TaskNames": SimpleNamespace(ocr_with_boxes="ocr"),
+    }
+    candidate = _candidate("b1", batch_size=1).model_copy(update={"allow_ram_spillover": True})
+    processor = SimpleNamespace(save_pretrained=lambda path: None)
+    model = SimpleNamespace(save_pretrained=lambda path: None)
+
+    def _load_stack(runtime_arg, checkpoint, config):
+        del runtime_arg, checkpoint, config
+        return model, processor, {}
+
+    run_training_candidate(
+        runtime=runtime,
+        run_key="test",
+        output_dir=tmp_path,
+        config=SuryaTrainConfig(mode=TrainMode.MANUAL),
+        candidate=candidate,
+        base_checkpoint="checkpoint",
+        train_rows=[],
+        val_rows=[],
+        original_train_count=0,
+        attempts=[],
+        selection_reason="manual_mode",
+        discarded_candidates=0,
+        retry_count=0,
+        planned_samples_per_second=None,
+        mode=TrainMode.MANUAL,
+        load_surya_training_stack=_load_stack,
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        epoch_logging_callback_cls=lambda: object(),
+    )
+
+    assert len(added_callbacks) == 3
+
+
 def test_combined_current_used_memory_caps_driver_report_to_total():
     torch_stub = SimpleNamespace(
         cuda=SimpleNamespace(
@@ -516,6 +615,49 @@ def test_eval_cleanup_callback_flushes_cuda_cache():
 
     assert returned_control is control
     assert calls == ["synchronize", "empty_cache", "ipc_collect"]
+
+
+def test_vram_pressure_callback_can_request_stop_without_raising(tmp_path: Path):
+    state = TrainingSignalState()
+    coordinator = TrainingTerminationCoordinator(tmp_path)
+    callback = VramPressureCallback(
+        callback_base=object,
+        torch_module=SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: True,
+                memory_reserved=lambda: 0,
+                get_device_properties=lambda _index: SimpleNamespace(
+                    total_memory=8192 * 1024 * 1024
+                ),
+                current_device=lambda: 0,
+            )
+        ),
+        usage_threshold_ratio=0.9,
+        on_trigger=lambda message: request_training_stop(
+            state,
+            reason=message,
+            stop_type="runtime",
+            save_checkpoint=False,
+            coordinator=coordinator,
+            rank=0,
+        ),
+    ).build()
+    control = SimpleNamespace(should_training_stop=False)
+    trainer_state = SimpleNamespace(global_step=1)
+
+    from modules.ocr_training.runtime import telemetry as telemetry_module
+
+    snapshot = SimpleNamespace(total_memory_mb=100, used_memory_mb=95, gpu_index=0)
+    original = telemetry_module.collect_gpu_memory_snapshot
+    telemetry_module.collect_gpu_memory_snapshot = lambda _torch: snapshot
+    try:
+        returned_control = callback.on_step_end(None, trainer_state, control)
+    finally:
+        telemetry_module.collect_gpu_memory_snapshot = original
+
+    assert returned_control is control
+    assert control.should_training_stop is True
+    assert state.runtime_error_message is not None
 
 
 def test_interrupt_callback_marks_eval_interrupted_on_prediction_step():
@@ -562,3 +704,29 @@ def test_eval_interrupt_discard_callback_strips_metrics_and_logs():
     assert logs == {}
     assert state.eval_interrupted is False
     assert len(warnings) >= 1
+
+
+def test_interrupt_callback_observes_peer_stop_request(tmp_path: Path):
+    coordinator = TrainingTerminationCoordinator(tmp_path)
+    request_training_stop(
+        TrainingSignalState(),
+        reason="peer runtime failure",
+        stop_type="runtime",
+        save_checkpoint=False,
+        coordinator=coordinator,
+        rank=1,
+    )
+    state = TrainingSignalState()
+    callback = build_interrupt_callback(
+        state,
+        object,
+        termination_coordinator=coordinator,
+    )
+    control = SimpleNamespace(should_training_stop=False, should_save=False)
+
+    returned_control = callback.on_step_end(None, None, control)
+
+    assert returned_control is control
+    assert state.runtime_error_message == "peer runtime failure"
+    assert control.should_training_stop is True
+    assert control.should_save is False

@@ -38,6 +38,7 @@ def candidate_to_train_config(config, candidate: TrainingCandidate):
             "greater_is_better": candidate.greater_is_better,
             "verbose_epochs": candidate.verbose_epochs,
             "abort_vram_usage_ratio": candidate.abort_vram_usage_ratio,
+            "allow_ram_spillover": candidate.allow_ram_spillover,
             "lora_rank": candidate.lora_rank,
             "lora_alpha": candidate.lora_alpha,
             "lora_dropout": candidate.lora_dropout,

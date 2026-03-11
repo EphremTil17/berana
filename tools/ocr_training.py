@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shlex
@@ -17,7 +18,12 @@ from modules.ocr_training.fidel_extract import extract_fidel
 from modules.ocr_training.schemas import SplitConfig, SuryaTrainConfig, TrainMode
 from modules.ocr_training.surya_dataset import build_surya_dataset
 from modules.ocr_training.surya_inspect import inspect_surya_dataset
-from modules.ocr_training.surya_train import evaluate_surya_checkpoint, run_surya_finetune
+from modules.ocr_training.surya_reports import monitor_training_run, write_training_report_bundle
+from modules.ocr_training.surya_train import (
+    evaluate_surya_checkpoint,
+    evaluate_surya_modalities,
+    run_surya_finetune,
+)
 from utils.logger import get_logger
 from utils.run_registry import next_versioned_dir
 
@@ -92,6 +98,41 @@ def _torchrun_entrypoint() -> list[str]:
     return [sys.executable, "-m", "torch.distributed.run"]
 
 
+def _merge_pytorch_alloc_conf(existing: str | None) -> str:
+    """Ensure the allocator config enables expandable segments without dropping user settings."""
+    if existing is None or not existing.strip():
+        return "expandable_segments:True"
+    entries: list[str] = []
+    seen_expandable = False
+    for token in existing.split(","):
+        normalized = token.strip()
+        if not normalized:
+            continue
+        key, _, _value = normalized.partition(":")
+        if key.strip() == "expandable_segments":
+            entries.append("expandable_segments:True")
+            seen_expandable = True
+            continue
+        entries.append(normalized)
+    if not seen_expandable:
+        entries.append("expandable_segments:True")
+    return ",".join(entries)
+
+
+def _training_launch_env() -> dict[str, str]:
+    """Return the launcher environment with allocator settings suited for high-pressure training."""
+    env = os.environ.copy()
+    env["PYTORCH_ALLOC_CONF"] = _merge_pytorch_alloc_conf(env.get("PYTORCH_ALLOC_CONF"))
+    return env
+
+
+def _apply_training_env_defaults() -> None:
+    """Apply allocator defaults to the current process before training imports initialize CUDA."""
+    os.environ["PYTORCH_ALLOC_CONF"] = _merge_pytorch_alloc_conf(
+        os.environ.get("PYTORCH_ALLOC_CONF")
+    )
+
+
 def _strip_flag(argv: list[str], flag: str) -> list[str]:
     """Return argv with one boolean flag removed."""
     return [value for value in argv if value != flag]
@@ -155,7 +196,7 @@ def _maybe_relaunch_multi_gpu(
             nproc_per_node,
             shlex.join(command),
         )
-    completed = subprocess.run(command, check=False, env=os.environ.copy())
+    completed = subprocess.run(command, check=False, env=_training_launch_env())
     raise typer.Exit(code=completed.returncode)
 
 
@@ -445,6 +486,13 @@ def cli_train_surya(
         float,
         typer.Option("--abort-vram-usage-ratio"),
     ] = 0.97,
+    allow_ram_spillover: Annotated[
+        bool,
+        typer.Option(
+            "--ram-spillover/--no-ram-spillover",
+            help="Allow GPU workloads to spill into shared/system memory instead of aborting at the VRAM guard threshold.",
+        ),
+    ] = True,
     verbose_epochs: Annotated[
         bool,
         typer.Option(
@@ -471,6 +519,7 @@ def cli_train_surya(
     )
     if output_dir is None and _cli_is_rank_zero():
         log.info("Resolved training output_dir=%s", resolved_output_dir)
+    _apply_training_env_defaults()
     _maybe_relaunch_multi_gpu(
         multi_gpu=multi_gpu,
         execution_backend=execution_backend,
@@ -516,6 +565,7 @@ def cli_train_surya(
         verbose_epochs=verbose_epochs,
         foreign_vram_threshold_ratio=foreign_vram_threshold_ratio,
         abort_vram_usage_ratio=abort_vram_usage_ratio,
+        allow_ram_spillover=allow_ram_spillover,
     )
 
     try:
@@ -600,6 +650,157 @@ def cli_evaluate_surya(
         summary["num_rows"],
         summary["mean_cer"],
         summary["mean_wer"],
+    )
+
+
+@app.command("evaluate-surya-modalities")
+def cli_evaluate_surya_modalities(
+    run_dir: Annotated[
+        Path,
+        typer.Option("--run-dir", help="Directory containing finetuned Surya checkpoints."),
+    ],
+    dataset_dir: Annotated[
+        Path,
+        typer.Option("--dataset-dir", help="Path to generated hf_dataset directory."),
+    ],
+    run_key: Annotated[
+        str,
+        typer.Option("--run-key", help="Registry run key/stem."),
+    ] = "fidel_typed_synthetic",
+    split: Annotated[str, typer.Option("--split", help="Dataset split to evaluate.")] = "holdout",
+    eval_fraction: Annotated[
+        float,
+        typer.Option("--eval-fraction", help="Deterministic fraction of the requested split."),
+    ] = 1.0,
+    eval_batch_size: Annotated[
+        int,
+        typer.Option("--eval-batch-size", help="Batch size for Surya inference during evaluation."),
+    ] = 8,
+    max_rows: Annotated[
+        int | None,
+        typer.Option("--max-rows", help="Optional cap on evaluated rows after split subsetting."),
+    ] = None,
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Deterministic seed for evaluation subsetting."),
+    ] = 42,
+    modalities: Annotated[
+        str,
+        typer.Option(
+            "--modalities",
+            help="Comma-separated modalities to evaluate independently, typically typed,synthetic.",
+        ),
+    ] = "typed,synthetic",
+):
+    """Evaluate a run separately across typed/synthetic modalities."""
+    try:
+        summary = evaluate_surya_modalities(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split.strip().lower(),
+            eval_fraction=eval_fraction,
+            eval_batch_size=eval_batch_size,
+            max_rows=max_rows,
+            seed=seed,
+            modalities=sorted(_csv_to_set(modalities)),
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        log.error("evaluate-surya-modalities failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    log.info(
+        "evaluate-surya-modalities complete split=%s modalities=%s",
+        split,
+        ",".join(sorted(summary["modalities"])),
+    )
+
+
+@app.command("visualize-surya-run")
+def cli_visualize_surya_run(
+    run_dir: Annotated[
+        Path,
+        typer.Option(
+            "--run-dir", help="Directory containing one finished or active Surya training run."
+        ),
+    ],
+    split: Annotated[
+        str | None,
+        typer.Option(
+            "--split",
+            help="Optional evaluated split name used to resolve predictions_<split>.jsonl for confusion artifacts.",
+        ),
+    ] = None,
+    predictions_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--predictions-path",
+            help="Optional explicit predictions_*.jsonl path to use for confusion artifacts.",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Optional output directory override for generated report artifacts. Defaults to <run-dir>/evaluation.",
+        ),
+    ] = None,
+):
+    """Generate a read-only report bundle with training curves and optional confusion artifacts."""
+    try:
+        artifacts = write_training_report_bundle(
+            run_dir=run_dir,
+            output_dir=output_dir,
+            split=split.strip().lower() if split else None,
+            predictions_path=predictions_path,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        log.error("visualize-surya-run failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    log.info(
+        "visualize-surya-run complete report=%s curves=%s",
+        artifacts.get("training_report_md"),
+        artifacts.get("training_curves_svg"),
+    )
+
+
+@app.command("monitor-surya-run")
+def cli_monitor_surya_run(
+    run_dir: Annotated[
+        Path,
+        typer.Option("--run-dir", help="Directory containing one active or completed Surya run."),
+    ],
+):
+    """Print a concise live monitor summary from training artifacts."""
+    try:
+        summary = monitor_training_run(run_dir)
+    except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        log.error("monitor-surya-run failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    log.info(
+        "monitor-surya-run selection_metric=%s latest_eval_step=%s latest_cer=%s latest_wer=%s best_cer=%s@%s best_wer=%s@%s evals_since_best_cer=%s csv=%s",
+        summary.get("selection_metric"),
+        summary.get("latest_eval_step"),
+        summary.get("latest_eval_cer"),
+        summary.get("latest_eval_wer"),
+        summary.get("best_cer_value"),
+        summary.get("best_cer_step"),
+        summary.get("best_wer_value"),
+        summary.get("best_wer_step"),
+        summary.get("evals_since_best_cer"),
+        summary.get("training_history_csv"),
+    )
+    typer.echo(
+        "monitor-surya-run "
+        f"selection_metric={summary.get('selection_metric')} "
+        f"latest_eval_step={summary.get('latest_eval_step')} "
+        f"latest_cer={summary.get('latest_eval_cer')} "
+        f"latest_wer={summary.get('latest_eval_wer')} "
+        f"best_cer={summary.get('best_cer_value')}@{summary.get('best_cer_step')} "
+        f"best_wer={summary.get('best_wer_value')}@{summary.get('best_wer_step')} "
+        f"evals_since_best_cer={summary.get('evals_since_best_cer')}"
     )
 
 

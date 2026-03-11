@@ -39,7 +39,9 @@ def test_initialize_distributed_context_sets_local_rank(monkeypatch):
         distributed=SimpleNamespace(
             is_available=lambda: True,
             is_initialized=lambda: False,
-            init_process_group=lambda backend: calls.append(f"init:{backend}"),
+            init_process_group=lambda backend, device_id=None: calls.append(
+                f"init:{backend}:{device_id}"
+            ),
         ),
     )
 
@@ -54,7 +56,36 @@ def test_initialize_distributed_context_sets_local_rank(monkeypatch):
     assert context.local_rank == 1
     assert context.world_size == 2
     assert context.device == "cuda:1"
-    assert calls == ["set_device:1", "init:nccl"]
+    assert calls == ["set_device:1", "init:nccl:1"]
+
+
+def test_maybe_barrier_prefers_local_device_id():
+    calls: list[object] = []
+    torch_stub = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+        distributed=SimpleNamespace(
+            is_initialized=lambda: True,
+            barrier=lambda device_ids=None: calls.append(device_ids),
+        ),
+    )
+
+    from modules.ocr_training.distributed.context import DistributedContext, maybe_barrier
+
+    maybe_barrier(
+        torch_module=torch_stub,
+        context=DistributedContext(
+            execution_backend="ddp",
+            ddp_backend="nccl",
+            is_distributed=True,
+            rank=1,
+            local_rank=1,
+            world_size=2,
+            device="cuda:1",
+            is_rank_zero=False,
+        ),
+    )
+
+    assert calls == [[1]]
 
 
 def test_build_training_candidates_tracks_world_size_in_global_batch():

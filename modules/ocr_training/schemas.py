@@ -173,6 +173,7 @@ class SuryaTrainConfig(BaseModel):
     verbose_epochs: bool = True
     foreign_vram_threshold_ratio: float = 0.10
     abort_vram_usage_ratio: float = 0.97
+    allow_ram_spillover: bool = True
 
     model_config = ConfigDict(extra="forbid")
 
@@ -282,6 +283,7 @@ class TrainingCandidate(BaseModel):
     verbose_epochs: bool = True
     foreign_vram_threshold_ratio: float = 0.10
     abort_vram_usage_ratio: float = 0.9375
+    allow_ram_spillover: bool = True
     lora_rank: int = 16
     lora_alpha: int = 32
     lora_dropout: float = 0.05

@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from modules.ocr_training.surya_reports import write_training_history_from_log_history
 from utils.logger import get_logger
 
 logger = get_logger("OCRTrainingCheckpointing")
@@ -23,8 +27,27 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     """Write JSON atomically to avoid corruption on interruption."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.write_text(
+        json.dumps(_round_artifact_value(payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     tmp.replace(path)
+
+
+def _round_artifact_value(value: Any, *, key: str | None = None) -> Any:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if key == "learning_rate":
+            return f"{value:.4e}"
+        return round(value, 4)
+    if isinstance(value, dict):
+        return {
+            item_key: _round_artifact_value(item, key=item_key) for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_round_artifact_value(item, key=key) for item in value]
+    return value
 
 
 def resolve_latest_checkpoint(output_dir: Path) -> Path | None:
@@ -72,25 +95,32 @@ def update_best_checkpoint_pointer(
     metric_name: str,
     metric_value: float,
     global_step: int,
+    weights_subdir: str = "best_checkpoint",
+    meta_filename: str = "best_model_meta.json",
 ) -> Path:
     """Update stable best-checkpoint pointer and metadata atomically."""
     weights_dir = output_dir / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
 
-    link_path = weights_dir / "best_checkpoint"
-    if link_path.exists() or link_path.is_symlink():
-        link_path.unlink()
-    link_path.symlink_to(checkpoint_path)
+    best_dir = weights_dir / weights_subdir
+    if best_dir.exists() or best_dir.is_symlink():
+        if best_dir.is_dir() and not best_dir.is_symlink():
+            shutil.rmtree(best_dir)
+        else:
+            best_dir.unlink()
+    shutil.copytree(checkpoint_path, best_dir)
 
-    meta_path = output_dir / "best_model_meta.json"
+    meta_path = output_dir / meta_filename
     atomic_write_json(
         meta_path,
         {
             "schema_version": "1.0",
-            "best_checkpoint": str(checkpoint_path),
+            "best_checkpoint": str(best_dir),
+            "source_checkpoint": str(checkpoint_path),
             "metric_name": metric_name,
             "metric_value": metric_value,
-            "global_step": global_step,
+            "metric_global_step": global_step,
+            "checkpoint_step": int(checkpoint_path.name.removeprefix("checkpoint-")),
         },
     )
     return meta_path
@@ -104,6 +134,99 @@ class TrainingSignalState:
     warning_emitted: bool = False
     eval_interrupted: bool = False
     eval_discard_warning_emitted: bool = False
+    stop_requested: bool = False
+    stop_reason: str | None = None
+    runtime_error_message: str | None = None
+    save_checkpoint_on_stop: bool = False
+
+
+class TrainingTerminationCoordinator:
+    """Coordinate stop requests between local DDP ranks via a shared marker file."""
+
+    def __init__(self, output_dir: Path):
+        """Bind one coordinator to the shared output directory for a run."""
+        self.marker_path = output_dir / "termination_state.json"
+
+    def clear(self) -> None:
+        """Remove any stale termination marker from a prior run."""
+        with suppress(FileNotFoundError):
+            self.marker_path.unlink()
+
+    def request_stop(
+        self,
+        *,
+        reason: str,
+        stop_type: str,
+        save_checkpoint: bool,
+        rank: int,
+    ) -> None:
+        """Publish a stop request that peer ranks can observe."""
+        atomic_write_json(
+            self.marker_path,
+            {
+                "schema_version": "1.0",
+                "reason": reason,
+                "stop_type": stop_type,
+                "save_checkpoint": bool(save_checkpoint),
+                "rank": int(rank),
+            },
+        )
+
+    def read_stop_request(self) -> dict[str, Any] | None:
+        """Return the latest stop request payload when present."""
+        if not self.marker_path.exists():
+            return None
+        try:
+            return json.loads(self.marker_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+
+def request_training_stop(
+    state: TrainingSignalState,
+    *,
+    reason: str,
+    stop_type: str,
+    save_checkpoint: bool,
+    coordinator: TrainingTerminationCoordinator | None = None,
+    rank: int = 0,
+) -> None:
+    """Record a local stop request and optionally publish it for peer ranks."""
+    state.stop_requested = True
+    state.stop_reason = reason
+    state.save_checkpoint_on_stop = bool(save_checkpoint)
+    if stop_type == "signal":
+        state.interrupted = True
+    else:
+        state.runtime_error_message = reason
+    if coordinator is not None:
+        coordinator.request_stop(
+            reason=reason,
+            stop_type=stop_type,
+            save_checkpoint=save_checkpoint,
+            rank=rank,
+        )
+
+
+def observe_training_stop(
+    state: TrainingSignalState,
+    *,
+    coordinator: TrainingTerminationCoordinator | None = None,
+) -> None:
+    """Refresh local stop state from any published peer-rank stop request."""
+    if coordinator is None or state.stop_requested:
+        return
+    payload = coordinator.read_stop_request()
+    if not payload:
+        return
+    request_training_stop(
+        state,
+        reason=str(payload.get("reason", "peer_stop_requested")),
+        stop_type=str(payload.get("stop_type", "runtime")),
+        save_checkpoint=bool(payload.get("save_checkpoint", False)),
+        coordinator=None,
+        rank=int(payload.get("rank", 0)),
+    )
 
 
 def install_signal_handlers(state: TrainingSignalState) -> None:
@@ -114,6 +237,9 @@ def install_signal_handlers(state: TrainingSignalState) -> None:
         if os.getpid() != owner_pid:
             return
         state.interrupted = True
+        state.stop_requested = True
+        state.stop_reason = f"signal:{signum}"
+        state.save_checkpoint_on_stop = True
         if not state.warning_emitted:
             state.warning_emitted = True
             logger.warning("Received signal %s. Will stop training gracefully.", signum)
@@ -122,13 +248,22 @@ def install_signal_handlers(state: TrainingSignalState) -> None:
     signal.signal(signal.SIGTERM, _handler)
 
 
-class BestCerCheckpointCallback(_TrainerCallback):
-    """Trainer callback that tracks best CER and updates stable checkpoint pointers."""
+class BestMetricCheckpointCallback(_TrainerCallback):
+    """Trainer callback that tracks one eval metric and updates a stable checkpoint copy."""
 
-    def __init__(self, output_dir: Path, metric_name: str = "eval_cer"):
+    def __init__(
+        self,
+        output_dir: Path,
+        metric_name: str = "eval_cer",
+        *,
+        weights_subdir: str = "best_checkpoint",
+        meta_filename: str = "best_model_meta.json",
+    ):
         """Initialize best-checkpoint callback state."""
         self.output_dir = output_dir
         self.metric_name = metric_name
+        self.weights_subdir = weights_subdir
+        self.meta_filename = meta_filename
         self.best_value: float | None = None
         self._pending_metric_value: float | None = None
         self._pending_global_step: int | None = None
@@ -159,9 +294,180 @@ class BestCerCheckpointCallback(_TrainerCallback):
             metric_name=self.metric_name,
             metric_value=self._pending_metric_value,
             global_step=self._pending_global_step,
+            weights_subdir=self.weights_subdir,
+            meta_filename=self.meta_filename,
         )
         self._pending_metric_value = None
         self._pending_global_step = None
+        return control
+
+
+class BestCerCheckpointCallback(BestMetricCheckpointCallback):
+    """Trainer callback that tracks best CER and updates stable checkpoint pointers."""
+
+
+class BestWerCheckpointCallback(BestMetricCheckpointCallback):
+    """Trainer callback that tracks best WER and updates stable checkpoint pointers."""
+
+
+class TrainingArtifactsCallback(_TrainerCallback):
+    """Trainer callback that keeps run-level history artifacts current during training."""
+
+    def __init__(self, output_dir: Path):
+        """Initialize one artifact writer callback bound to a run directory."""
+        self.output_dir = output_dir
+        self.eval_dir = output_dir / "evaluation"
+        self._last_written_step = -1
+        self._start_time = time.monotonic()
+        self._last_log_time: float | None = None
+        self._last_log_step: int | None = None
+        self._timing_history: list[dict[str, float | int | str | None]] = []
+
+    def _append_timing_event(self, state, logs: dict[str, Any]) -> None:
+        now = time.monotonic()
+        global_step = int(state.global_step or 0)
+        event_type = "eval" if "eval_cer" in logs or "eval_loss" in logs else "train"
+        event = {
+            "step": global_step,
+            "event_type": event_type,
+            "wall_time_sec": round(now - self._start_time, 4),
+            "rolling_step_time_sec": None,
+            "eval_runtime_sec": logs.get("eval_runtime", logs.get("eval_runtime_sec")),
+        }
+        if (
+            self._last_log_time is not None
+            and self._last_log_step is not None
+            and global_step > self._last_log_step
+        ):
+            event["rolling_step_time_sec"] = round(
+                (now - self._last_log_time) / max(global_step - self._last_log_step, 1),
+                4,
+            )
+        self._last_log_time = now
+        self._last_log_step = global_step
+        self._timing_history.append(event)
+        self.eval_dir.mkdir(parents=True, exist_ok=True)
+        timing_path = self.eval_dir / "training_timing.jsonl"
+        with timing_path.open("w", encoding="utf-8") as handle:
+            for item in self._timing_history:
+                handle.write(json.dumps(_round_artifact_value(item), ensure_ascii=False) + "\n")
+
+    def _write_if_needed(self, state, *, force: bool = False) -> None:
+        global_step = int(state.global_step or 0)
+        if not force and global_step <= self._last_written_step:
+            return
+        log_history = list(getattr(state, "log_history", None) or [])
+        if not log_history:
+            return
+        write_training_history_from_log_history(
+            run_dir=self.output_dir,
+            eval_dir=self.eval_dir,
+            log_history=log_history,
+            include_visuals=force,
+        )
+        self._last_written_step = global_step
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        """Refresh training-history artifacts on periodic logs and eval emissions."""
+        del args, kwargs
+        if not logs:
+            return control
+        self._append_timing_event(state, logs)
+        self._write_if_needed(state)
+        return control
+
+    def on_save(self, args, state, control, **kwargs):
+        """Force-refresh tracking artifacts after checkpoint saves."""
+        del args, kwargs
+        self._write_if_needed(state, force=True)
+        return control
+
+    def on_train_end(self, args, state, control, **kwargs):
+        """Flush final tracking artifacts at the end of training."""
+        del args, kwargs
+        self._write_if_needed(state, force=True)
+        return control
+
+
+class PlateauWarningCallback(_TrainerCallback):
+    """Warn when evaluation metrics plateau without changing trainer control flow."""
+
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        min_evals: int = 4,
+        patience_evals: int = 4,
+        cer_tolerance: float = 0.01,
+        wer_tolerance: float = 0.02,
+    ):
+        """Configure a conservative warning-only plateau detector for eval CER/WER."""
+        self.output_dir = output_dir
+        self.min_evals = max(1, int(min_evals))
+        self.patience_evals = max(1, int(patience_evals))
+        self.cer_tolerance = float(cer_tolerance)
+        self.wer_tolerance = float(wer_tolerance)
+        self._eval_history: list[dict[str, float]] = []
+        self._best_cer: float | None = None
+        self._best_eval_index = -1
+        self._last_warning_eval_index = -1
+
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
+        """Emit warning-only plateau telemetry after repeated flat evals."""
+        del args, kwargs
+        if not metrics:
+            return control
+        cer = metrics.get("eval_cer")
+        wer = metrics.get("eval_wer")
+        if cer is None or wer is None:
+            return control
+        current = {
+            "step": float(state.global_step or 0),
+            "cer": float(cer),
+            "wer": float(wer),
+        }
+        self._eval_history.append(current)
+        eval_index = len(self._eval_history) - 1
+        if self._best_cer is None or current["cer"] < self._best_cer:
+            self._best_cer = current["cer"]
+            self._best_eval_index = eval_index
+            return control
+        if len(self._eval_history) < self.min_evals:
+            return control
+        evals_since_best = eval_index - self._best_eval_index
+        if evals_since_best < self.patience_evals:
+            return control
+        if eval_index <= self._last_warning_eval_index:
+            return control
+
+        recent = self._eval_history[-self.patience_evals :]
+        cer_values = [item["cer"] for item in recent]
+        wer_values = [item["wer"] for item in recent]
+        cer_span = max(cer_values) - min(cer_values)
+        wer_span = max(wer_values) - min(wer_values)
+        if cer_span > self.cer_tolerance or wer_span > self.wer_tolerance:
+            return control
+
+        train_losses = [
+            float(item["loss"])
+            for item in list(getattr(state, "log_history", None) or [])
+            if item.get("loss") is not None
+        ]
+        train_loss_note = ""
+        if len(train_losses) >= 2 and train_losses[-1] < train_losses[-2]:
+            train_loss_note = " Train loss is still falling, so this may be overfitting rather than optimization failure."
+        logger.warning(
+            "Plateau warning: no new best CER for %d evals at step %d; recent CER span=%.5f and WER span=%.5f. Inspect %s and %s / %s, then decide whether to interrupt.%s",
+            evals_since_best,
+            int(current["step"]),
+            cer_span,
+            wer_span,
+            self.output_dir / "evaluation" / "training_history.csv",
+            self.output_dir / "best_model_meta.json",
+            self.output_dir / "best_wer_model_meta.json",
+            train_loss_note,
+        )
+        self._last_warning_eval_index = eval_index
         return control
 
 
@@ -193,17 +499,6 @@ class EpochLoggingCallback(_TrainerCallback):
                 int(state.global_step),
                 loss,
                 logs.get("learning_rate", "n/a"),
-            )
-        if "eval_loss" in logs or "eval_cer" in logs or "eval_wer" in logs:
-            eval_exact = logs.get("eval_exact", None)
-            eval_exact_pct = "n/a" if eval_exact is None else f"{float(eval_exact) * 100.0:.2f}%"
-            logger.info(
-                "Eval step=%d loss=%s cer=%s wer=%s exact=%s",
-                int(state.global_step),
-                logs.get("eval_loss", "n/a"),
-                logs.get("eval_cer", "n/a"),
-                logs.get("eval_wer", "n/a"),
-                eval_exact_pct,
             )
         return control
 

@@ -11,6 +11,8 @@ from tqdm import tqdm
 from modules.ocr_benchmark.metrics import calculate_cer_wer, normalize_ethiopic_text
 from modules.ocr_training.registry import STAGE_SURYA_EVALUATE, register_training_stage
 from modules.ocr_training.surya_common import (
+    deterministic_sample_rows,
+    infer_row_modality,
     load_split_rows,
     relative_to_base,
     sanitize_prediction_text,
@@ -19,6 +21,7 @@ from modules.ocr_training.surya_common import (
 from modules.ocr_training.surya_reports import (
     write_confusion_artifacts,
     write_training_history_artifacts,
+    write_training_report_bundle,
 )
 
 TAG_FILTER_LIST = [
@@ -59,15 +62,19 @@ def evaluate_surya_checkpoint(
     max_rows: int | None,
     eval_batch_size: int,
     seed: int,
+    modality: str | None = None,
     runtime,
     load_surya_eval_predictor,
 ) -> dict[str, Any]:
     """Evaluate Surya OCR predictions against target split labels."""
     rows = load_split_rows(dataset_dir, split)
+    if modality is not None:
+        normalized_modality = modality.strip().lower()
+        rows = [row for row in rows if infer_row_modality(row) == normalized_modality]
     if eval_fraction < 1.0:
         rows = subset_rows(rows, fraction=eval_fraction, seed=seed)
     if max_rows is not None and len(rows) > max_rows:
-        rows = rows[:max_rows]
+        rows = deterministic_sample_rows(rows, max_rows=max_rows, seed=seed)
     foundation_predictor = load_surya_eval_predictor(runtime, run_dir)
     predictor = runtime["RecognitionPredictor"](foundation_predictor)
     predictor.disable_tqdm = True
@@ -118,14 +125,15 @@ def evaluate_surya_checkpoint(
     exact_rate = float(mean(1.0 if r["exact"] else 0.0 for r in records)) if records else 0.0
     eval_dir = run_dir / "evaluation"
     eval_dir.mkdir(parents=True, exist_ok=True)
-    predictions_path = eval_dir / f"predictions_{split}.jsonl"
+    suffix = f"{split}_{modality}" if modality else split
+    predictions_path = eval_dir / f"predictions_{suffix}.jsonl"
     with predictions_path.open("w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-    summary_path = eval_dir / f"summary_{split}.json"
+    summary_path = eval_dir / f"summary_{suffix}.json"
     summary_payload = {
         "split": split,
+        "modality": modality,
         "num_rows": len(records),
         "eval_fraction": eval_fraction,
         "eval_batch_size": eval_batch_size,
@@ -138,13 +146,14 @@ def evaluate_surya_checkpoint(
     summary_path.write_text(
         json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    report_path = eval_dir / f"report_{split}.md"
+    report_path = eval_dir / f"report_{suffix}.md"
     report_path.write_text(
         "\n".join(
             [
                 "# Surya Evaluation Report",
                 "",
                 f"- Split: `{split}`",
+                f"- Modality: `{modality or 'all'}`",
                 f"- Rows: `{len(records)}`",
                 f"- Eval Fraction: `{eval_fraction:.4f}`",
                 f"- Eval Batch Size: `{eval_batch_size}`",
@@ -159,9 +168,17 @@ def evaluate_surya_checkpoint(
     )
     report_artifacts = {}
     report_artifacts.update(
-        write_confusion_artifacts(eval_dir=eval_dir, split=split, records=records)
+        write_confusion_artifacts(eval_dir=eval_dir, split=suffix, records=records)
     )
     report_artifacts.update(write_training_history_artifacts(run_dir=run_dir, eval_dir=eval_dir))
+    report_artifacts.update(
+        write_training_report_bundle(
+            run_dir=run_dir,
+            output_dir=eval_dir,
+            split=suffix,
+            predictions_path=predictions_path,
+        )
+    )
     register_training_stage(
         stage=STAGE_SURYA_EVALUATE,
         run_key=run_key,
@@ -189,3 +206,50 @@ def evaluate_surya_checkpoint(
         },
     )
     return summary_payload
+
+
+def evaluate_surya_modalities(
+    *,
+    run_key: str,
+    run_dir: Path,
+    dataset_dir: Path,
+    split: str,
+    eval_fraction: float,
+    max_rows: int | None,
+    eval_batch_size: int,
+    seed: int,
+    modalities: list[str],
+    runtime,
+    load_surya_eval_predictor,
+) -> dict[str, Any]:
+    """Evaluate one checkpoint separately across requested typed/synthetic modalities."""
+    modality_summaries: dict[str, Any] = {}
+    for modality in modalities:
+        modality_summaries[modality] = evaluate_surya_checkpoint(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split,
+            eval_fraction=eval_fraction,
+            max_rows=max_rows,
+            eval_batch_size=eval_batch_size,
+            seed=seed,
+            modality=modality,
+            runtime=runtime,
+            load_surya_eval_predictor=load_surya_eval_predictor,
+        )
+    eval_dir = run_dir / "evaluation"
+    combined_summary_path = eval_dir / f"summary_{split}_modalities.json"
+    combined_payload = {
+        "split": split,
+        "modalities": modality_summaries,
+        "seed": seed,
+        "eval_fraction": eval_fraction,
+        "max_rows": max_rows,
+        "eval_batch_size": eval_batch_size,
+    }
+    combined_summary_path.write_text(
+        json.dumps(combined_payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return combined_payload

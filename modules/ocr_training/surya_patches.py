@@ -5,25 +5,51 @@ from statistics import mean
 import numpy as np
 
 from modules.ocr_benchmark.metrics import calculate_cer_wer, normalize_ethiopic_text
-from modules.ocr_training.checkpointing import TrainingSignalState
+from modules.ocr_training.checkpointing import (
+    TrainingSignalState,
+    observe_training_stop,
+)
 
 
-def build_interrupt_callback(signal_state: TrainingSignalState, callback_base):
+def build_interrupt_callback(
+    signal_state: TrainingSignalState,
+    callback_base,
+    *,
+    termination_coordinator=None,
+):
     """Build a TrainerCallback instance that stops on signal interruption."""
 
     class _InterruptAwareCallback(callback_base):
+        def _sync_stop(self) -> None:
+            observe_training_stop(signal_state, coordinator=termination_coordinator)
+            if signal_state.interrupted and not signal_state.stop_requested:
+                signal_state.stop_requested = True
+                signal_state.stop_reason = signal_state.stop_reason or "signal:legacy"
+                signal_state.save_checkpoint_on_stop = True
+
         def on_step_end(self, args, state, control, **kwargs):
-            if signal_state.interrupted:
+            del args, state, kwargs
+            self._sync_stop()
+            if signal_state.stop_requested:
                 control.should_training_stop = True
-                control.should_save = True
+                control.should_save = bool(signal_state.save_checkpoint_on_stop)
             return control
 
         def on_prediction_step(self, args, state, control, **kwargs):
             del args, state, kwargs
-            if signal_state.interrupted:
+            self._sync_stop()
+            if signal_state.stop_requested:
                 signal_state.eval_interrupted = True
                 control.should_training_stop = True
-                control.should_save = True
+                control.should_save = bool(signal_state.save_checkpoint_on_stop)
+            return control
+
+        def on_evaluate(self, args, state, control, **kwargs):
+            del args, state, kwargs
+            self._sync_stop()
+            if signal_state.stop_requested:
+                control.should_training_stop = True
+                control.should_save = bool(signal_state.save_checkpoint_on_stop)
             return control
 
     return _InterruptAwareCallback()

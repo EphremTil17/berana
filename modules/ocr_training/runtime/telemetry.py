@@ -146,19 +146,27 @@ class VramPressureCallback:
     """Trainer callback that aborts when framebuffer usage gets dangerously high."""
 
     def __init__(
-        self, *, callback_base, torch_module, usage_threshold_ratio: float, check_interval: int = 1
+        self,
+        *,
+        callback_base,
+        torch_module,
+        usage_threshold_ratio: float,
+        check_interval: int = 1,
+        on_trigger=None,
     ):
         """Initialize runtime GPU memory guard state."""
         self._callback_base = callback_base
         self._torch = torch_module
         self.usage_threshold_ratio = usage_threshold_ratio
         self.check_interval = max(1, check_interval)
+        self.on_trigger = on_trigger
 
     def build(self):
         """Create the actual callback instance bound to the configured threshold."""
         torch_module = self._torch
         usage_threshold_ratio = self.usage_threshold_ratio
         check_interval = self.check_interval
+        on_trigger = self.on_trigger
 
         class _GuardCallback(self._callback_base):
             def on_step_end(self, args, state, control, **kwargs):
@@ -193,7 +201,7 @@ class VramPressureCallback:
                         "means the workload has already spilled into shared/system memory."
                     )
 
-                raise RuntimeError(
+                message = (
                     "VRAM guard triggered: GPU "
                     f"{getattr(snapshot, 'gpu_index', 0)} is using {used_memory_mb}MiB/"
                     f"{total_memory_mb}MiB ({used_ratio:.1%}), above the configured "
@@ -201,6 +209,11 @@ class VramPressureCallback:
                     "shared-system-memory spillover. Free GPU memory or reduce training pressure "
                     f"(LoRA/QLoRA, smaller batch, shorter sequence) and retry.{overflow_note}"
                 )
+                if on_trigger is not None:
+                    on_trigger(message)
+                    control.should_training_stop = True
+                    return control
+                raise RuntimeError(message)
 
         return _GuardCallback()
 
@@ -281,6 +294,7 @@ class ThroughputGuardCallback:
         planned_samples_per_second: float | None,
         min_steps: int = 100,
         threshold_ratio: float = 0.70,
+        on_trigger=None,
     ):
         """Initialize throughput guard state."""
         self._callback_base = callback_base
@@ -288,6 +302,7 @@ class ThroughputGuardCallback:
         self.planned_samples_per_second = planned_samples_per_second
         self.min_steps = min_steps
         self.threshold_ratio = threshold_ratio
+        self.on_trigger = on_trigger
 
     def build(self):
         """Create the actual guard callback."""
@@ -295,6 +310,7 @@ class ThroughputGuardCallback:
         planned_samples_per_second = self.planned_samples_per_second
         min_steps = self.min_steps
         threshold_ratio = self.threshold_ratio
+        on_trigger = self.on_trigger
 
         class _ThroughputCallback(self._callback_base):
             def __init__(self):
@@ -319,10 +335,15 @@ class ThroughputGuardCallback:
                 ) / elapsed
                 if observed_samples_per_second >= planned_samples_per_second * threshold_ratio:
                     return control
-                raise RuntimeError(
+                message = (
                     "throughput_shortfall:"
                     f"observed={observed_samples_per_second:.4f},"
                     f"planned={planned_samples_per_second:.4f}"
                 )
+                if on_trigger is not None:
+                    on_trigger(message)
+                    control.should_training_stop = True
+                    return control
+                raise RuntimeError(message)
 
         return _ThroughputCallback()

@@ -1,24 +1,59 @@
-# OCR Training Tool (FIDEL + Surya)
+# OCR Training Tooling
 
-This file documents the `tools/ocr_training.py` CLI surface. The implementation lives in
-`modules/ocr_training/`.
+This directory documents the OCR training workflow implemented by [`tools/ocr_training.py`](/workspace/berana/tools/ocr_training.py) and the supporting runtime under [`modules/ocr_training/`](/workspace/berana/modules/ocr_training).
 
-Standalone training workflow entrypoint:
+The current system is built around:
 
-```bash
-PYTHONPATH=. .venv/bin/python tools/ocr_training.py --help
-```
+- FIDEL typed + synthetic extraction
+- deterministic Surya-compatible dataset generation
+- manual or auto-planned Surya finetuning
+- single-GPU and single-node multi-GPU execution
+- CER-primary best-checkpoint tracking with side-by-side WER tracking
+- live run monitoring artifacts written during training
+- automatic final report generation on completion or interrupt
 
-## Commands
+If you need environment setup from scratch, read [setup.md](/workspace/berana/tools/ocr_training/setup.md).
 
-1. Extract FIDEL typed+synthetic assets:
+## Design Goals
+
+The OCR training stack is meant to behave more like a mature training framework than a one-off script:
+
+- training should be reproducible
+- eval subsets should be deterministic within a run
+- best checkpoints should survive checkpoint pruning
+- runs should emit enough live telemetry to decide whether to continue
+- multi-GPU interruption and failure paths should not strand worker processes
+- post-run reports should be created automatically
+
+## Core Workflow
+
+The end-to-end flow is:
+
+1. Extract raw FIDEL assets.
+2. Build the Surya dataset.
+3. Inspect batch/token geometry if needed.
+4. Train with `train-surya`.
+5. Let the runtime auto-write live reports during training.
+6. Let the runtime auto-generate final report assets on completion or interrupt.
+7. Optionally run explicit per-modality evaluation for paper-style comparison.
+
+## Main Commands
+
+### 1. Extract FIDEL typed + synthetic data
+
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py extract-fidel \
   --raw-root input/ocr_training/fidel/raw \
   --extracted-root input/ocr_training/fidel/extracted
 ```
 
-2. Build deterministic Surya dataset:
+Default behavior:
+
+- includes `typed,synthetic`
+- excludes `handwritten,hdd,hdd_18,hdd_rand`
+
+### 2. Build the Surya dataset
+
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py build-surya-dataset \
   --extracted-root input/ocr_training/fidel/extracted \
@@ -26,80 +61,361 @@ PYTHONPATH=. .venv/bin/python tools/ocr_training.py build-surya-dataset \
   --dataset-name fidel_typed_synthetic
 ```
 
-3. Train Surya with the adaptive planner (`auto` mode by default):
-```bash
-PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
-  --train-fraction 0.10 \
-  --mode auto \
-  --logging-steps 20 \
-  --verbose-epochs
-```
+This creates a versioned dataset run with:
 
-4. Inspect token lengths, truncation pressure, and batch geometry before training:
+- `train.jsonl`
+- `val.jsonl`
+- `holdout.jsonl`
+- split manifests
+- row manifests under the dataset run
+
+### 3. Inspect token and batch geometry
+
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py inspect-surya-dataset \
   --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset
 ```
 
-5. Run explicit manual-mode training when you need fixed settings:
-```bash
-PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
-  --mode manual \
-  --finetune-strategy qlora \
-  --per-device-train-batch-size 1 \
-  --gradient-accumulation-steps 4 \
-  --dataloader-num-workers 8
-```
+Use this before large runs when tuning:
 
-6. Run single-node multi-GPU training with the same command shape:
+- sequence length
+- batch size
+- grad accumulation
+- truncation risk
+
+### 4. Train Surya
+
+Example full-data one-epoch manual LoRA run:
+
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
   --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
-  --mode auto \
+  --output-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
+  --mode manual \
+  --finetune-strategy lora \
+  --per-device-train-batch-size 6 \
+  --per-device-eval-batch-size 4 \
+  --gradient-accumulation-steps 2 \
+  --dataloader-num-workers 8 \
+  --max-sequence-length 1024 \
+  --no-gradient-checkpointing \
+  --eval-steps 100 \
+  --eval-max-rows 1000 \
+  --save-steps 500 \
+  --resume none \
+  --logging-steps 20 \
+  --verbose-epochs \
+  --train-fraction 1.0 \
+  --num-train-epochs 1 \
   --multi-gpu
 ```
 
-7. Evaluate holdout CER/WER:
+Important notes:
+
+- `--multi-gpu` automatically relaunches under `torchrun`
+- allocator defaults now automatically enable `expandable_segments:True`
+- `--ram-spillover` is allowed by default
+- `--resume none` means start fresh even if that output directory already has checkpoints
+
+### 5. Evaluate a trained run
+
+Standard eval:
+
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py evaluate-surya \
-  --run-dir output/ocr_training_runs/fidel_typed_synthetic_v01 \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
   --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
   --split holdout
 ```
 
-## Notes
+Per-modality eval:
 
-- Handwritten sources are excluded by default.
-- Split policy defaults to `train/val/holdout = 80/10/10`.
-- Berana gold adapter flags are reserved and validated, but ingestion is phase-2.
-- Progress bars are shown for extraction, dataset build, and evaluation.
-- Training uses Hugging Face step progress plus epoch-level verbose logging (enabled by default).
-- Evaluation logging includes CER, WER, and exact-match percentage.
-- When `--load-best-model-at-end` is enabled, `save_steps` is auto-adjusted to a multiple of `eval_steps` if needed.
-- Training now runs a GPU preflight check and aborts if foreign GPU consumers already occupy more than `10%` of VRAM.
-- Training also stops on sustained extreme VRAM usage instead of continuing into likely shared-memory fallback territory.
-- Dataloader defaults now use worker processes, pinned memory, and persistent workers for better host-to-GPU throughput.
-- `train-surya` now defaults to adaptive `auto` mode and benchmarks admissible `QLoRA`/`LoRA` candidates before real training.
-- If `--output-dir` is omitted, `train-surya` now auto-allocates a versioned run directory under `output/ocr_training_runs/`, for example `fidel_typed_synthetic_auto_v01`.
-- In `auto` mode, low-level knobs such as batch size, grad accumulation, sequence length, and dataloader workers act as ceilings rather than fixed values.
-- `--train-fraction` subsets only the `train` split at load time; `val` and `holdout` remain full.
-- `inspect-surya-dataset` writes a JSON inspection report under the dataset run's `inspection/` directory.
-- `inspect-surya-dataset` defaults to the `train` split, inspects `1024` deterministic rows, and reports local 8GB-friendly batch/grad-accum geometry by default.
-- `full` finetune is manual-only; auto mode never selects it.
-- Completed runs save adapter/base-model metadata so resume and `evaluate-surya` load the correct stack automatically.
-- Multi-GPU v1 is single-node only and expects a homogeneous CUDA host.
-- `--multi-gpu` relaunches the same CLI under `torchrun` automatically, using all visible local CUDA devices.
-- `--execution-backend` and `--ddp-backend` remain available as advanced overrides, but normal runs should use the unified `--multi-gpu` flag.
-- In multi-GPU mode, batch flags remain per-rank. Effective global batch is:
-  `per_device_train_batch_size * gradient_accumulation_steps * gpu_count`.
-- In multi-GPU auto mode, the planner evaluates per-rank settings, records effective global batch size in the selected config, and prefers configurations that stay within per-rank VRAM headroom instead of pushing into shared system memory.
-- In multi-GPU mode, only rank 0 writes run metadata, best-checkpoint pointers, reports, and final root artifacts.
-- Training-time eval remains available in multi-GPU mode, but `evaluate-surya` itself still runs as a standalone single-process command.
-- Docker templates must provide a shared writable workspace for all ranks plus NCCL-compatible CUDA drivers.
-- Adaptive runs persist:
-  - `hardware_profile.json`
-  - `autotune_plan.json`
-  - `candidate_results.jsonl`
-  - `selected_training_config.json`
+```bash
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py evaluate-surya-modalities \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --split holdout \
+  --modalities typed,synthetic
+```
+
+### 6. Optional manual utilities
+
+These exist for inspection and regeneration, but they are not required for the normal training workflow:
+
+```bash
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py monitor-surya-run --run-dir output/ocr_training_runs/...
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py visualize-surya-run --run-dir output/ocr_training_runs/...
+```
+
+Normal workflow does not require you to remember these, because the live and final artifacts are generated automatically.
+
+## What Is Automated Now
+
+### During training
+
+Rank 0 automatically writes:
+
+- `evaluation/training_history.csv`
+- `evaluation/training_history.jsonl`
+- `evaluation/training_curves.svg`
+- `training_summary.json`
+
+These are refreshed during the run. They are meant to answer:
+
+- Are loss, CER, and WER still improving?
+- How many evals since best CER?
+- Did train loss keep falling while CER/WER flattened?
+- Which checkpoint is currently best by CER and by WER?
+
+### On completion or interrupt
+
+Rank 0 automatically generates or refreshes:
+
+- `evaluation/training_report.md`
+- `evaluation/training_curves.png`
+- `evaluation/training_curves.svg`
+- `training_summary.json`
+
+The goal is that one run command produces both live monitoring artifacts and a final human-readable report bundle.
+
+## Run Artifacts
+
+### Best-checkpoint artifacts
+
+Primary best metric is CER.
+
+Saved artifacts:
+
+- `weights/best_checkpoint/`
+- `best_model_meta.json`
+
+Side-by-side WER tracking:
+
+- `weights/best_checkpoint_wer/`
+- `best_wer_model_meta.json`
+
+These are copied stable checkpoints, not fragile pointers to prunable `checkpoint-*` folders.
+
+### Live history artifacts
+
+- `evaluation/training_history.csv`
+- `evaluation/training_history.jsonl`
+- `evaluation/training_curves.svg`
+- `training_summary.json`
+
+CSV columns include:
+
+- `step`
+- `epoch`
+- `loss`
+- `eval_loss`
+- `eval_cer`
+- `eval_wer`
+- `eval_exact`
+- `eval_runtime_sec`
+- `learning_rate`
+- `grad_norm`
+- `wall_time_sec`
+- `rolling_step_time_sec`
+
+### Reproducibility manifests
+
+Training now writes row manifests so subsetted runs can be reconstructed:
+
+- `manifests/eval_subset_manifest.jsonl`
+- `manifests/train_subset_manifest.jsonl` when `train_fraction < 1.0`
+
+This is especially important because:
+
+- train subsetting is deterministic
+- eval subsetting is deterministic
+- `eval_max_rows` is now a seeded sample, not a top-row slice
+
+## Determinism and Sampling
+
+### Train fraction
+
+`train_fraction < 1.0` currently means:
+
+- one deterministic subset is chosen at run start
+- the same train subset is reused for all epochs in that run
+
+This is not equivalent to whole-dataset training. It is a fixed repeated subset unless you start a new run or change the seed.
+
+### Eval fraction and eval max rows
+
+Current eval behavior:
+
+- validation rows are deterministically subsetted with `eval_fraction`
+- if `eval_max_rows` is set, a deterministic seeded sample is taken
+- the same eval subset is reused throughout the run
+
+This is intentional. It keeps CER/WER curves comparable across steps and epochs.
+
+## Evaluation Policy
+
+### During training
+
+Training-time evaluation is designed for progress tracking, not final paper claims.
+
+Use it to answer:
+
+- Is the run improving?
+- Did CER stop improving?
+- Is WER diverging from CER?
+
+### After training
+
+For paper-style comparison, use explicit evaluation on:
+
+- `typed`
+- `synthetic`
+
+That is why `evaluate-surya-modalities` exists. It separates the two modalities rather than relying on a mixed validation aggregate.
+
+## Metric Policy
+
+### Best checkpoint selection
+
+Official best checkpoint:
+
+- `eval_cer`
+
+Side-by-side tracked metric:
+
+- `eval_wer`
+
+This keeps model selection simple and defensible while preserving WER visibility.
+
+### Text normalization
+
+The OCR evaluation normalization now does the following before CER/WER:
+
+- NFC Unicode normalization
+- leading/trailing whitespace trim
+- punctuation normalization to spaces
+- internal whitespace collapse
+- Ethiopic equivalence mapping for known confusing variants
+
+This is closer to the stated paper protocol than the earlier implementation, which did not sufficiently normalize punctuation.
+
+## Practical Stop Guidance
+
+The system does not auto-stop on plateau.
+
+Instead it:
+
+- writes live CSV and summaries
+- tracks `evals_since_best_cer`
+- emits rank-0 warning logs when CER and WER plateau conservatively
+
+This is deliberate. It warns the user without taking control away during expensive training.
+
+## Problems We Hit and How They Were Fixed
+
+### 1. Multi-GPU interrupt teardown left noisy NCCL/TCPStore shutdown and orphaned workers
+
+Observed problem:
+
+- Ctrl-C on DDP runs could leave residual workers
+- one GPU could stay pinned at `100%`
+- teardown produced repeated TCPStore/NCCL heartbeat warnings
+
+Fixes:
+
+- strengthened distributed stop coordination across ranks
+- synchronized teardown more carefully before process-group destruction
+- made device selection explicit in distributed setup and barriers
+- improved interrupt and peer-stop propagation
+
+### 2. Near-VRAM training behavior was unstable
+
+Observed problem:
+
+- large LoRA configs near VRAM limits would either hard OOM or wedge under DDP
+- single-GPU behavior and multi-GPU behavior differed
+
+Fixes:
+
+- enabled allocator `expandable_segments:True` automatically in training launches
+- exposed spillover policy via `--ram-spillover/--no-ram-spillover`
+- preserved early guard behavior when spillover is explicitly disabled
+
+### 3. Best checkpoint tracking was fragile
+
+Observed problem:
+
+- metadata could point to pruned checkpoints
+- best checkpoint references were not stable enough for long runs
+
+Fixes:
+
+- stable copied best checkpoint under `weights/best_checkpoint`
+- separate stable copied WER-best checkpoint under `weights/best_checkpoint_wer`
+- root metadata files for both CER and WER bests
+
+### 4. Training observability was too weak
+
+Observed problem:
+
+- no YOLO-style live metric artifact path
+- user had to inspect `trainer_state.json` by hand
+
+Fixes:
+
+- live CSV/JSONL/SVG summaries during training
+- automatic final report generation
+- automatic final PNG generation
+- live monitor summary support
+- manifests for deterministic subset reproducibility
+
+### 5. Eval subset behavior was biased
+
+Observed problem:
+
+- `eval_max_rows` used the first `N` rows, which could bias metrics
+
+Fix:
+
+- replaced head slicing with deterministic seeded sampling
+
+### 6. Console eval logs were hard to read
+
+Observed problem:
+
+- eval metrics were logged in one dense horizontal line
+- progress bar output made the result visually noisy
+
+Fix:
+
+- eval logging now emits a structured multi-line block through the logger
+
+## Recommended Practice Before a Serious Run
+
+Use a new output directory for each major experiment.
+
+Preferred order:
+
+1. `extract-fidel`
+2. `build-surya-dataset`
+3. `inspect-surya-dataset`
+4. `train-surya`
+5. review auto-generated CSV/report artifacts
+6. run `evaluate-surya-modalities` for final typed/synthetic comparison
+
+## Current Limitations
+
+- training-time eval does not generate full confusion matrices unless prediction records exist
+- modality-specific evaluation is still explicit post-run work, not silently inserted into every training run
+- `train_fraction` still means fixed subset reuse, not rotating exclusive shards
+- OCR metric normalization is improved and defensible, but not intended as an exact claim of paper-source parity
+
+## Files To Know
+
+- CLI: [`tools/ocr_training.py`](/workspace/berana/tools/ocr_training.py)
+- setup guide: [setup.md](/workspace/berana/tools/ocr_training/setup.md)
+- executor/runtime: [`modules/ocr_training/surya_executor.py`](/workspace/berana/modules/ocr_training/surya_executor.py)
+- reporting: [`modules/ocr_training/surya_reports.py`](/workspace/berana/modules/ocr_training/surya_reports.py)
+- checkpointing callbacks: [`modules/ocr_training/checkpointing.py`](/workspace/berana/modules/ocr_training/checkpointing.py)
+- train wrapper: [`modules/ocr_training/surya_train.py`](/workspace/berana/modules/ocr_training/surya_train.py)
+- explicit evaluation: [`modules/ocr_training/surya_eval.py`](/workspace/berana/modules/ocr_training/surya_eval.py)

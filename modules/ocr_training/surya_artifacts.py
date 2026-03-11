@@ -143,7 +143,7 @@ def reset_training_outputs(output_dir: Path) -> None:
                 target.unlink()
 
 
-def register_completed_finetune(
+def register_completed_finetune(  # noqa: C901
     *,
     run_key: str,
     output_dir: Path,
@@ -179,6 +179,7 @@ def register_completed_finetune(
         "autotune_plan.json",
         "candidate_results.jsonl",
         "selected_training_config.json",
+        "training_summary.json",
     ):
         artifact_path = output_dir / name
         if artifact_path.exists():
@@ -187,9 +188,26 @@ def register_completed_finetune(
             )
     if latest_checkpoint:
         artifacts["latest_checkpoint"] = relative_to_base(latest_checkpoint)
-    best_meta = output_dir / "best_model_meta.json"
-    if best_meta.exists():
-        artifacts["best_model_meta"] = relative_to_base(best_meta)
+    for name in ("best_model_meta.json", "best_wer_model_meta.json"):
+        best_meta = output_dir / name
+        if best_meta.exists():
+            artifacts[name.replace(".json", "")] = relative_to_base(best_meta)
+    manifests_dir = output_dir / "manifests"
+    for name in ("train_subset_manifest.jsonl", "eval_subset_manifest.jsonl"):
+        artifact_path = manifests_dir / name
+        if artifact_path.exists():
+            artifacts[name.replace(".jsonl", "")] = relative_to_base(artifact_path)
+    eval_dir = output_dir / "evaluation"
+    for name in (
+        "training_history.csv",
+        "training_history.jsonl",
+        "training_curves.svg",
+        "training_curves.png",
+        "training_report.md",
+    ):
+        artifact_path = eval_dir / name
+        if artifact_path.exists():
+            artifacts[name.replace(".", "_")] = relative_to_base(artifact_path)
 
     register_training_stage(
         stage=STAGE_SURYA_FINETUNE,
@@ -253,6 +271,29 @@ def register_interrupted_finetune(
         "emergency_checkpoint": relative_to_base(emergency_dir),
         "finetune_meta": relative_to_base(finetune_meta_path(output_dir)),
     }
+    training_summary = output_dir / "training_summary.json"
+    if training_summary.exists():
+        artifacts["training_summary"] = relative_to_base(training_summary)
+    for name in ("best_model_meta.json", "best_wer_model_meta.json"):
+        best_meta = output_dir / name
+        if best_meta.exists():
+            artifacts[name.replace(".json", "")] = relative_to_base(best_meta)
+    manifests_dir = output_dir / "manifests"
+    for name in ("train_subset_manifest.jsonl", "eval_subset_manifest.jsonl"):
+        artifact_path = manifests_dir / name
+        if artifact_path.exists():
+            artifacts[name.replace(".jsonl", "")] = relative_to_base(artifact_path)
+    eval_dir = output_dir / "evaluation"
+    for name in (
+        "training_history.csv",
+        "training_history.jsonl",
+        "training_curves.svg",
+        "training_curves.png",
+        "training_report.md",
+    ):
+        artifact_path = eval_dir / name
+        if artifact_path.exists():
+            artifacts[name.replace(".", "_")] = relative_to_base(artifact_path)
     register_training_stage(
         stage=STAGE_SURYA_FINETUNE,
         run_key=run_key,

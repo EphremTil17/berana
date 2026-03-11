@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 
 from modules.ocr_training.checkpointing import EpochLoggingCallback, atomic_write_json
@@ -24,6 +25,8 @@ from modules.ocr_training.surya_artifacts import (
     write_hardware_profile,
 )
 from modules.ocr_training.surya_common import (
+    deterministic_sample_rows,
+    infer_row_modality,
     infer_train_subset_bucket,
     load_split_rows,
     subset_rows,
@@ -33,6 +36,7 @@ from modules.ocr_training.surya_common import (
     resolve_finetune_strategy as _resolve_finetune_strategy,
 )
 from modules.ocr_training.surya_eval import evaluate_surya_checkpoint as _evaluate_surya_checkpoint
+from modules.ocr_training.surya_eval import evaluate_surya_modalities as _evaluate_surya_modalities
 from modules.ocr_training.surya_executor import (
     benchmark_candidate,
     run_training_candidate,
@@ -48,6 +52,7 @@ from modules.ocr_training.surya_planner import (
     run_auto_with_fallback,
     run_manual_training,
 )
+from modules.ocr_training.surya_reports import write_subset_manifest
 from utils.logger import get_logger
 
 logger = get_logger("OCRTrainingSuryaTrain")
@@ -68,7 +73,11 @@ def _prepare_train_and_val_rows(*, dataset_dir: Path, config: SuryaTrainConfig):
         seed=config.seed,
     )
     if config.eval_max_rows is not None and len(val_rows) > config.eval_max_rows:
-        val_rows = val_rows[: config.eval_max_rows]
+        val_rows = deterministic_sample_rows(
+            val_rows,
+            max_rows=config.eval_max_rows,
+            seed=config.seed,
+        )
     return original_train_rows, original_val_rows, train_rows, val_rows
 
 
@@ -109,6 +118,37 @@ def _log_subset_adjustments(
             config.seed,
             len(original_val_rows),
             len(val_rows),
+        )
+
+
+def _write_subset_manifests(
+    *,
+    output_dir: Path,
+    config: SuryaTrainConfig,
+    train_rows: list[dict[str, str]],
+    val_rows: list[dict[str, str]],
+    is_rank_zero: bool,
+) -> None:
+    """Persist deterministic train/eval row manifests for reproducibility."""
+    if not is_rank_zero:
+        return
+    manifests_dir = output_dir / "manifests"
+    eval_rows = [{**row, "modality": infer_row_modality(row)} for row in val_rows]
+    write_subset_manifest(
+        output_path=manifests_dir / "eval_subset_manifest.jsonl",
+        rows=eval_rows,
+        split="val",
+        seed=int(config.seed),
+        selection="eval_fraction+eval_max_rows",
+    )
+    if float(config.train_fraction) < 1.0:
+        train_manifest_rows = [{**row, "modality": infer_row_modality(row)} for row in train_rows]
+        write_subset_manifest(
+            output_path=manifests_dir / "train_subset_manifest.jsonl",
+            rows=train_manifest_rows,
+            split="train",
+            seed=int(config.seed),
+            selection="train_fraction",
         )
 
 
@@ -308,6 +348,13 @@ def run_surya_finetune(
             train_rows=train_rows,
             val_rows=val_rows,
         )
+        _write_subset_manifests(
+            output_dir=output_dir,
+            config=config,
+            train_rows=train_rows,
+            val_rows=val_rows,
+            is_rank_zero=distributed_context.is_rank_zero,
+        )
         existing_finetune_meta = _load_finetune_meta(output_dir)
         if existing_finetune_meta:
             base_checkpoint = str(existing_finetune_meta["base_checkpoint"])
@@ -325,7 +372,7 @@ def run_surya_finetune(
         training_stack_loader = _build_training_stack_loader(run_logger)
 
         if config.mode == TrainMode.MANUAL:
-            result = _run_manual_mode(
+            return _run_manual_mode(
                 runtime=runtime,
                 run_key=run_key,
                 output_dir=output_dir,
@@ -340,10 +387,8 @@ def run_surya_finetune(
                 training_stack_loader=training_stack_loader,
                 run_logger=run_logger,
             )
-            maybe_barrier(torch_module=torch, context=distributed_context)
-            return result
 
-        result = _run_auto_mode(
+        return _run_auto_mode(
             runtime=runtime,
             run_key=run_key,
             output_dir=output_dir,
@@ -358,9 +403,10 @@ def run_surya_finetune(
             distributed_context=distributed_context,
             run_logger=run_logger,
         )
-        maybe_barrier(torch_module=torch, context=distributed_context)
-        return result
     finally:
+        # Keep rank teardown aligned on both clean exits and signal interruptions.
+        with suppress(Exception):
+            maybe_barrier(torch_module=torch, context=distributed_context)
         destroy_distributed_context(torch_module=torch, context=distributed_context)
 
 
@@ -374,6 +420,7 @@ def evaluate_surya_checkpoint(
     eval_batch_size: int = 8,
     max_rows: int | None = None,
     seed: int = 42,
+    modality: str | None = None,
 ) -> dict[str, float | int | str]:
     """Evaluate Surya OCR predictions against target split labels."""
     runtime = require_surya()
@@ -386,6 +433,40 @@ def evaluate_surya_checkpoint(
         eval_batch_size=eval_batch_size,
         max_rows=max_rows,
         seed=seed,
+        modality=modality,
+        runtime=runtime,
+        load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
+            runtime,
+            run_dir,
+            _load_finetune_meta,
+        ),
+    )
+
+
+def evaluate_surya_modalities(
+    *,
+    run_key: str,
+    run_dir: Path,
+    dataset_dir: Path,
+    split: str,
+    eval_fraction: float = 1.0,
+    eval_batch_size: int = 8,
+    max_rows: int | None = None,
+    seed: int = 42,
+    modalities: list[str] | None = None,
+) -> dict[str, object]:
+    """Evaluate one run across typed/synthetic modalities using the existing evaluator."""
+    runtime = require_surya()
+    return _evaluate_surya_modalities(
+        run_key=run_key,
+        run_dir=run_dir,
+        dataset_dir=dataset_dir,
+        split=split,
+        eval_fraction=eval_fraction,
+        eval_batch_size=eval_batch_size,
+        max_rows=max_rows,
+        seed=seed,
+        modalities=modalities or ["typed", "synthetic"],
         runtime=runtime,
         load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
             runtime,

@@ -18,6 +18,8 @@ from modules.ocr_training.runtime.telemetry import (
 from modules.ocr_training.schemas import SuryaTrainConfig
 from modules.ocr_training.surya_artifacts import load_finetune_meta, write_finetune_meta
 from modules.ocr_training.surya_common import (
+    deterministic_sample_rows,
+    infer_row_modality,
     infer_train_subset_bucket,
     resolve_finetune_strategy,
     resolve_save_eval_steps,
@@ -28,6 +30,7 @@ from modules.ocr_training.surya_patches import (
     build_preprocess_logits_for_metrics,
     compute_metrics_factory,
 )
+from modules.ocr_training.surya_train import _prepare_train_and_val_rows
 from modules.ocr_training.surya_training_args import build_training_arguments
 
 
@@ -154,6 +157,55 @@ def test_surya_train_config_allows_small_eval_subset():
 def test_surya_train_config_rejects_invalid_eval_max_rows():
     with pytest.raises(ValueError, match="eval_max_rows"):
         SuryaTrainConfig(eval_max_rows=0)
+
+
+def test_deterministic_sample_rows_is_seeded_and_capped():
+    rows = [{"image": f"/tmp/{index}.png", "text": f"text-{index}"} for index in range(8)]
+
+    sampled_a = deterministic_sample_rows(rows, max_rows=3, seed=42)
+    sampled_b = deterministic_sample_rows(rows, max_rows=3, seed=42)
+    sampled_c = deterministic_sample_rows(rows, max_rows=3, seed=7)
+
+    assert sampled_a == sampled_b
+    assert len(sampled_a) == 3
+    assert sampled_a != rows[:3]
+    assert sampled_a != sampled_c
+
+
+def test_prepare_train_and_val_rows_uses_seeded_sample_for_eval_max_rows(
+    monkeypatch, tmp_path: Path
+):
+    train_rows = [
+        {"image": f"/tmp/train_{index}.png", "text": f"train-{index}"} for index in range(4)
+    ]
+    val_rows = [{"image": f"/tmp/val_{index}.png", "text": f"val-{index}"} for index in range(7)]
+    sampler_calls: list[tuple[int, int, int]] = []
+
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_train.load_split_rows",
+        lambda dataset_dir, split: train_rows if split == "train" else val_rows,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_train.deterministic_sample_rows",
+        lambda rows, *, max_rows, seed: (
+            sampler_calls.append((len(rows), max_rows, seed)) or list(reversed(rows))[:max_rows]
+        ),
+    )
+
+    _original_train_rows, _original_val_rows, _train_subset, sampled_val_rows = (
+        _prepare_train_and_val_rows(
+            dataset_dir=tmp_path / "dataset",
+            config=SuryaTrainConfig(eval_fraction=1.0, eval_max_rows=3, seed=42),
+        )
+    )
+
+    assert sampler_calls == [(7, 3, 42)]
+    assert sampled_val_rows == list(reversed(val_rows))[:3]
+
+
+def test_infer_row_modality_matches_typed_and_synthetic_paths():
+    assert infer_row_modality({"image": "/tmp/typed/example.png"}) == "typed"
+    assert infer_row_modality({"image": "/tmp/synthetic/example.png"}) == "synthetic"
 
 
 def test_compute_metrics_factory_uses_surya_ocr_tokenizer():

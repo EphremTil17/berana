@@ -78,6 +78,11 @@ def infer_train_subset_bucket(row: dict[str, str]) -> str:
     return "unknown"
 
 
+def infer_row_modality(row: dict[str, str]) -> str:
+    """Infer typed/synthetic modality for evaluation and reporting from one row."""
+    return infer_train_subset_bucket(row)
+
+
 def subset_rows(
     rows: list[dict[str, str]],
     *,
@@ -106,6 +111,21 @@ def subset_rows(
         selected.extend(ordered[:target_count])
 
     return sorted(selected, key=lambda row: _stable_row_key(seed, row))
+
+
+def deterministic_sample_rows(
+    rows: list[dict[str, str]],
+    *,
+    max_rows: int,
+    seed: int,
+) -> list[dict[str, str]]:
+    """Return one deterministic sampled subset capped to `max_rows` rows."""
+    if max_rows < 1:
+        raise ValueError("max_rows must be >= 1.")
+    if len(rows) <= max_rows:
+        return list(rows)
+    ordered = sorted(rows, key=lambda row: _stable_row_key(seed, row))
+    return ordered[:max_rows]
 
 
 def subset_train_rows(
