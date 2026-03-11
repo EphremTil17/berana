@@ -278,7 +278,48 @@ def load_surya_training_stack(
     return model, processor, metadata
 
 
-def load_surya_eval_predictor(runtime: dict[str, Any], run_dir, load_finetune_meta):
+def resolve_eval_adapter_source(
+    run_dir,
+    *,
+    checkpoint_target: str = "best_cer",
+    checkpoint_path=None,
+):
+    """Resolve which adapter/checkpoint directory evaluation should load."""
+    if checkpoint_path is not None:
+        return checkpoint_path
+
+    normalized_target = checkpoint_target.strip().lower()
+    link_map = {
+        "best_cer": run_dir / "weights" / "best_checkpoint",
+        "best_wer": run_dir / "weights" / "best_checkpoint_wer",
+    }
+    if normalized_target in link_map:
+        target = link_map[normalized_target]
+        return target.resolve() if target.exists() else run_dir
+    if normalized_target == "latest":
+        checkpoint_dirs = []
+        for path in run_dir.glob("checkpoint-*"):
+            if not path.is_dir():
+                continue
+            suffix = path.name.removeprefix("checkpoint-")
+            if not suffix.isdigit():
+                continue
+            checkpoint_dirs.append(path)
+        if checkpoint_dirs:
+            checkpoint_dirs.sort(key=lambda p: int(p.name.removeprefix("checkpoint-")))
+            return checkpoint_dirs[-1]
+        return run_dir
+    raise ValueError("checkpoint_target must be one of: best_cer, best_wer, latest")
+
+
+def load_surya_eval_predictor(
+    runtime: dict[str, Any],
+    run_dir,
+    load_finetune_meta,
+    *,
+    checkpoint_target: str = "best_cer",
+    checkpoint_path=None,
+):
     """Load a FoundationPredictor-compatible object for evaluation."""
     finetune_meta = load_finetune_meta(run_dir)
     if not finetune_meta:
@@ -290,10 +331,11 @@ def load_surya_eval_predictor(runtime: dict[str, Any], run_dir, load_finetune_me
     if strategy == "full":
         return foundation_predictor
 
-    adapter_source = run_dir
-    best_checkpoint_link = run_dir / "weights" / "best_checkpoint"
-    if best_checkpoint_link.exists():
-        adapter_source = best_checkpoint_link.resolve()
+    adapter_source = resolve_eval_adapter_source(
+        run_dir,
+        checkpoint_target=checkpoint_target,
+        checkpoint_path=checkpoint_path,
+    )
     foundation_predictor.model = runtime["PeftModel"].from_pretrained(
         foundation_predictor.model,
         str(adapter_source),

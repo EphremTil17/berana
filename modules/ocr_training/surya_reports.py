@@ -91,6 +91,10 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _load_plateau_warnings(run_dir: Path) -> list[dict[str, Any]]:
+    return _read_jsonl(run_dir / "evaluation" / "plateau_warnings.jsonl")
+
+
 def _latest_checkpoint_step(run_dir: Path) -> int | None:
     from modules.ocr_training.checkpointing import resolve_latest_checkpoint
 
@@ -262,6 +266,7 @@ def _training_summary(run_dir: Path, log_history: list[dict[str, Any]]) -> dict[
     latest_train = train_rows[-1] if train_rows else None
     finetune_meta = _load_finetune_context(run_dir)
     trainer_state = _trainer_state_payload(run_dir)
+    plateau_warnings = _load_plateau_warnings(run_dir)
     train_fraction = finetune_meta.get("train_fraction")
     selection_metric = str(finetune_meta.get("effective_metric_for_best_model", "eval_cer"))
     cer_meta = _load_best_checkpoint_meta(run_dir, "best_model_meta.json")
@@ -303,6 +308,8 @@ def _training_summary(run_dir: Path, log_history: list[dict[str, Any]]) -> dict[
             else None
         ),
         "evals_since_best_cer": evals_since_best_cer,
+        "plateau_warning_count": len(plateau_warnings),
+        "latest_plateau_warning": plateau_warnings[-1] if plateau_warnings else None,
         "train_fraction": train_fraction,
         "notes": notes,
     }
@@ -645,11 +652,14 @@ def write_training_report_bundle(
     output_dir: Path | None = None,
     split: str | None = None,
     predictions_path: Path | None = None,
+    include_training_artifacts: bool = True,
 ) -> dict[str, Path]:
     """Generate one read-only run report bundle from existing history and optional predictions."""
     target_dir = output_dir or (run_dir / "evaluation")
     target_dir.mkdir(parents=True, exist_ok=True)
-    artifacts = write_training_history_artifacts(run_dir=run_dir, eval_dir=target_dir)
+    artifacts: dict[str, Path] = {}
+    if include_training_artifacts:
+        artifacts = write_training_history_artifacts(run_dir=run_dir, eval_dir=target_dir)
     log_history = load_training_log_history(run_dir)
     summary = _round_artifact_value(_load_training_summary(run_dir, log_history))
 
@@ -690,27 +700,30 @@ def write_training_report_bundle(
         "",
         "## Artifacts",
         "",
-        f"- training history csv: `{(artifacts.get('training_history_csv') or target_dir / 'training_history.csv').name}`",
-        f"- training curves svg: `{(artifacts.get('training_curves_svg') or target_dir / 'training_curves.svg').name}`",
-        f"- training curves png: `{(artifacts.get('training_curves_png') or target_dir / 'training_curves.png').name}`",
-        f"- training history jsonl: `{(artifacts.get('training_history_jsonl') or target_dir / 'training_history.jsonl').name}`",
+        f"- training history csv: `{(run_dir / 'evaluation' / 'training_history.csv').name}`",
+        f"- training curves svg: `{(run_dir / 'evaluation' / 'training_curves.svg').name}`",
+        f"- training curves png: `{(run_dir / 'evaluation' / 'training_curves.png').name}`",
+        f"- training history jsonl: `{(run_dir / 'evaluation' / 'training_history.jsonl').name}`",
         f"- {confusion_note}",
     ]
+    if summary.get("plateau_warning_count"):
+        report_lines.append(f"- plateau warnings emitted: `{summary.get('plateau_warning_count')}`")
     for note in summary.get("notes") or []:
         report_lines.append(f"- note: {note}")
     report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
-    png_path = target_dir / "training_curves.png"
-    rows, train_loss_points, eval_loss_points, eval_cer_points, eval_wer_points = _history_rows(
-        log_history
-    )
-    del rows
-    artifacts["training_curves_png"] = _render_training_curves_png(
-        png_path=png_path,
-        summary=summary,
-        train_loss_points=train_loss_points,
-        eval_loss_points=eval_loss_points,
-        eval_cer_points=eval_cer_points,
-        eval_wer_points=eval_wer_points,
-    )
+    if include_training_artifacts:
+        png_path = target_dir / "training_curves.png"
+        rows, train_loss_points, eval_loss_points, eval_cer_points, eval_wer_points = _history_rows(
+            log_history
+        )
+        del rows
+        artifacts["training_curves_png"] = _render_training_curves_png(
+            png_path=png_path,
+            summary=summary,
+            train_loss_points=train_loss_points,
+            eval_loss_points=eval_loss_points,
+            eval_cer_points=eval_cer_points,
+            eval_wer_points=eval_wer_points,
+        )
     artifacts["training_report_md"] = report_path
     return artifacts

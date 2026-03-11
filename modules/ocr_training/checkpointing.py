@@ -396,10 +396,12 @@ class PlateauWarningCallback(_TrainerCallback):
         self,
         output_dir: Path,
         *,
-        min_evals: int = 4,
-        patience_evals: int = 4,
-        cer_tolerance: float = 0.01,
-        wer_tolerance: float = 0.02,
+        min_evals: int = 6,
+        patience_evals: int = 8,
+        cer_tolerance: float = 0.015,
+        wer_tolerance: float = 0.75,
+        cer_regression_threshold: float = 0.03,
+        wer_regression_threshold: float = 0.5,
     ):
         """Configure a conservative warning-only plateau detector for eval CER/WER."""
         self.output_dir = output_dir
@@ -407,10 +409,62 @@ class PlateauWarningCallback(_TrainerCallback):
         self.patience_evals = max(1, int(patience_evals))
         self.cer_tolerance = float(cer_tolerance)
         self.wer_tolerance = float(wer_tolerance)
+        self.cer_regression_threshold = float(cer_regression_threshold)
+        self.wer_regression_threshold = float(wer_regression_threshold)
         self._eval_history: list[dict[str, float]] = []
         self._best_cer: float | None = None
+        self._best_wer: float | None = None
         self._best_eval_index = -1
         self._last_warning_eval_index = -1
+        self._warnings_path = self.output_dir / "evaluation" / "plateau_warnings.jsonl"
+
+    def _append_warning_artifact(self, payload: dict[str, Any]) -> None:
+        self._warnings_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._warnings_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(_round_artifact_value(payload), ensure_ascii=False) + "\n")
+
+    def _should_skip_warning(self, *, eval_index: int, evals_since_best: int) -> bool:
+        return (
+            len(self._eval_history) < self.min_evals
+            or evals_since_best < self.patience_evals
+            or eval_index <= self._last_warning_eval_index
+        )
+
+    def _evaluate_plateau_state(
+        self,
+        *,
+        current: dict[str, float],
+        recent: list[dict[str, float]],
+    ) -> dict[str, float | bool]:
+        cer_values = [item["cer"] for item in recent]
+        wer_values = [item["wer"] for item in recent]
+        cer_span = max(cer_values) - min(cer_values)
+        wer_span = max(wer_values) - min(wer_values)
+        best_cer = float(self._best_cer or current["cer"])
+        best_wer = float(self._best_wer or current["wer"])
+        cer_gap = current["cer"] - best_cer
+        wer_gap = current["wer"] - best_wer
+        recent_best_cer = min(cer_values)
+        recent_best_wer = min(wer_values)
+        flat_recent_window = cer_span <= self.cer_tolerance and wer_span <= self.wer_tolerance
+        sustained_regression = (
+            cer_gap >= self.cer_regression_threshold
+            and recent_best_cer >= best_cer + (self.cer_regression_threshold / 2.0)
+            and (
+                wer_gap >= self.wer_regression_threshold
+                or recent_best_wer >= best_wer + (self.wer_regression_threshold / 2.0)
+            )
+        )
+        return {
+            "cer_span": cer_span,
+            "wer_span": wer_span,
+            "best_cer": best_cer,
+            "best_wer": best_wer,
+            "cer_gap": cer_gap,
+            "wer_gap": wer_gap,
+            "flat_recent_window": flat_recent_window,
+            "sustained_regression": sustained_regression,
+        }
 
     def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Emit warning-only plateau telemetry after repeated flat evals."""
@@ -431,21 +485,17 @@ class PlateauWarningCallback(_TrainerCallback):
         if self._best_cer is None or current["cer"] < self._best_cer:
             self._best_cer = current["cer"]
             self._best_eval_index = eval_index
-            return control
-        if len(self._eval_history) < self.min_evals:
+        if self._best_wer is None or current["wer"] < self._best_wer:
+            self._best_wer = current["wer"]
+        if eval_index == self._best_eval_index:
             return control
         evals_since_best = eval_index - self._best_eval_index
-        if evals_since_best < self.patience_evals:
-            return control
-        if eval_index <= self._last_warning_eval_index:
+        if self._should_skip_warning(eval_index=eval_index, evals_since_best=evals_since_best):
             return control
 
         recent = self._eval_history[-self.patience_evals :]
-        cer_values = [item["cer"] for item in recent]
-        wer_values = [item["wer"] for item in recent]
-        cer_span = max(cer_values) - min(cer_values)
-        wer_span = max(wer_values) - min(wer_values)
-        if cer_span > self.cer_tolerance or wer_span > self.wer_tolerance:
+        plateau_state = self._evaluate_plateau_state(current=current, recent=recent)
+        if not plateau_state["flat_recent_window"] and not plateau_state["sustained_regression"]:
             return control
 
         train_losses = [
@@ -456,12 +506,33 @@ class PlateauWarningCallback(_TrainerCallback):
         train_loss_note = ""
         if len(train_losses) >= 2 and train_losses[-1] < train_losses[-2]:
             train_loss_note = " Train loss is still falling, so this may be overfitting rather than optimization failure."
+        warning_payload = {
+            "step": int(current["step"]),
+            "evals_since_best_cer": int(evals_since_best),
+            "recent_cer_span": plateau_state["cer_span"],
+            "recent_wer_span": plateau_state["wer_span"],
+            "best_cer_so_far": plateau_state["best_cer"],
+            "best_wer_so_far": plateau_state["best_wer"],
+            "current_cer_gap": plateau_state["cer_gap"],
+            "current_wer_gap": plateau_state["wer_gap"],
+            "flat_recent_window": plateau_state["flat_recent_window"],
+            "sustained_regression": plateau_state["sustained_regression"],
+            "train_loss_still_falling": bool(train_loss_note),
+            "message": (
+                "Plateau warning: no new best CER for "
+                f"{evals_since_best} evals; inspect evaluation/training_history.csv and "
+                "best checkpoint metadata before continuing."
+            ),
+        }
+        self._append_warning_artifact(warning_payload)
         logger.warning(
-            "Plateau warning: no new best CER for %d evals at step %d; recent CER span=%.5f and WER span=%.5f. Inspect %s and %s / %s, then decide whether to interrupt.%s",
+            "Plateau warning: no new best CER for %d evals at step %d; current CER gap=%.5f WER gap=%.5f recent CER span=%.5f WER span=%.5f. Inspect %s and %s / %s, then decide whether to interrupt.%s",
             evals_since_best,
             int(current["step"]),
-            cer_span,
-            wer_span,
+            plateau_state["cer_gap"],
+            plateau_state["wer_gap"],
+            plateau_state["cer_span"],
+            plateau_state["wer_span"],
             self.output_dir / "evaluation" / "training_history.csv",
             self.output_dir / "best_model_meta.json",
             self.output_dir / "best_wer_model_meta.json",

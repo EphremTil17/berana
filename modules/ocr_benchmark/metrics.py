@@ -2,6 +2,7 @@ import re
 import unicodedata
 
 import editdistance
+import jiwer
 
 # Known equivalent characters mapping (visually identical or phonetically merged variants)
 # Ethiopian keyboards often output distinct codepoints that render indistinguishably
@@ -16,6 +17,15 @@ ETHIOPIC_EQUIVALENTS = {
     "ዐ": "አ",  # A equivalents
     "ኣ": "አ",
 }
+
+PAPER_WHITESPACE_PUNCT_TRANSFORM = jiwer.Compose(
+    [
+        jiwer.RemovePunctuation(),
+        jiwer.RemoveMultipleSpaces(),
+        jiwer.Strip(),
+        jiwer.ReduceToSingleSentence(),
+    ]
+)
 
 
 def normalize_ethiopic_text(text: str, strict_punctuation: bool = True) -> str:
@@ -48,6 +58,36 @@ def normalize_ethiopic_text(text: str, strict_punctuation: bool = True) -> str:
         text = text.replace(variant, canonical)
 
     return text
+
+
+def normalize_ethiopic_text_paper(text: str) -> str:
+    """Normalize text using a paper-aligned JiWER pipeline for evaluation only.
+
+    This mirrors the paper's description more closely:
+    1. Unicode NFC normalization.
+    2. JiWER punctuation removal.
+    3. JiWER whitespace normalization.
+
+    It intentionally does not apply Berana-specific Ethiopic equivalence collapsing.
+    """
+    if not text:
+        return ""
+    normalized = unicodedata.normalize("NFC", text)
+    return str(PAPER_WHITESPACE_PUNCT_TRANSFORM(normalized))
+
+
+def calculate_cer_wer_paper(pred: str, gt: str) -> tuple[float, float, bool]:
+    """Calculate CER/WER using JiWER with paper-aligned normalization."""
+    norm_pred = normalize_ethiopic_text_paper(pred)
+    norm_gt = normalize_ethiopic_text_paper(gt)
+    if not norm_gt:
+        cer = 1.0 if norm_pred else 0.0
+        wer = 1.0 if norm_pred else 0.0
+        return cer, wer, norm_pred == norm_gt
+    cer = jiwer.cer(norm_gt, norm_pred)
+    wer = jiwer.wer(norm_gt, norm_pred)
+    exact_match = norm_pred == norm_gt
+    return float(cer), float(wer), exact_match
 
 
 def calculate_cer_wer(pred: str, gt: str) -> tuple[float, float, bool]:

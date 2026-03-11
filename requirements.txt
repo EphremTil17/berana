@@ -51,6 +51,7 @@ pillow>=10.2.0,<11.0.0          # Verified for layout parser binning
 numpy>=2.4.2
 sentencepiece
 editdistance>=0.8.1             # Required for CER/WER evaluation metrics
+jiwer>=4.0.0                   # Paper-aligned whitespace/punctuation normalization for OCR eval
 
 # 6. VISION AI & ANNOTATION
 # New stack for transitioning to YOLOv8-based layout analysis.

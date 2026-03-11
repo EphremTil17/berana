@@ -70,6 +70,9 @@ def test_evaluate_surya_checkpoint_batches_inference(tmp_path: Path):
     assert summary["num_rows"] == 4
     assert summary["mean_cer"] == 0.0
     assert summary["mean_wer"] == 0.0
+    assert (run_dir / "tool_evaluation" / "predictions_holdout.jsonl").exists()
+    assert (run_dir / "tool_evaluation" / "summary_holdout.json").exists()
+    assert not (run_dir / "tool_evaluation" / "training_history.csv").exists()
 
 
 def test_write_confusion_artifacts_outputs_top_pairs(tmp_path: Path):
@@ -163,6 +166,28 @@ def test_write_training_history_artifacts_summary_includes_best_wer_and_fraction
     assert "train_fraction < 1.0" in summary["notes"][0]
     assert "best CER @20" in svg_text
     assert "best WER @40" in svg_text
+
+
+def test_write_training_history_artifacts_summary_includes_plateau_warning(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    eval_dir = run_dir / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    trainer_state = {
+        "log_history": [
+            {"step": 20, "eval_loss": 0.4, "eval_cer": 0.3, "eval_wer": 0.6, "epoch": 0.2},
+        ]
+    }
+    (run_dir / "trainer_state.json").write_text(json.dumps(trainer_state), encoding="utf-8")
+    (eval_dir / "plateau_warnings.jsonl").write_text(
+        json.dumps({"step": 120, "evals_since_best_cer": 4}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    artifacts = write_training_history_artifacts(run_dir=run_dir, eval_dir=eval_dir)
+
+    summary = json.loads(artifacts["training_summary_json"].read_text(encoding="utf-8"))
+    assert summary["plateau_warning_count"] == 1
+    assert summary["latest_plateau_warning"]["step"] == 120
 
 
 def test_write_training_history_artifacts_merges_timing_sidecar(tmp_path: Path):
@@ -275,6 +300,52 @@ def test_write_training_report_bundle_generates_report_with_confusion_data(tmp_p
     assert artifacts["training_curves_png"].exists()
     report_text = artifacts["training_report_md"].read_text(encoding="utf-8")
     assert "confusion artifacts generated" in report_text
+
+
+def test_write_training_report_bundle_can_skip_training_artifact_copy(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    eval_dir = run_dir / "evaluation"
+    tool_eval_dir = run_dir / "tool_evaluation_v01"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "trainer_state.json").write_text(
+        json.dumps(
+            {
+                "log_history": [
+                    {"step": 10, "loss": 1.2, "epoch": 0.1},
+                    {
+                        "step": 20,
+                        "eval_loss": 0.4,
+                        "eval_cer": 0.3,
+                        "eval_wer": 0.6,
+                        "epoch": 0.2,
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (eval_dir / "training_history.csv").write_text("step,loss\n10,1.2\n", encoding="utf-8")
+    (eval_dir / "training_history.jsonl").write_text("{}", encoding="utf-8")
+    (eval_dir / "training_curves.svg").write_text("<svg />", encoding="utf-8")
+    (eval_dir / "training_curves.png").write_bytes(b"png")
+    predictions_path = tool_eval_dir / "predictions_holdout.jsonl"
+    tool_eval_dir.mkdir(parents=True, exist_ok=True)
+    predictions_path.write_text(
+        json.dumps({"gt_text": "abc", "pred_text": "abc"}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    artifacts = write_training_report_bundle(
+        run_dir=run_dir,
+        output_dir=tool_eval_dir,
+        split="holdout",
+        predictions_path=predictions_path,
+        include_training_artifacts=False,
+    )
+
+    assert artifacts["training_report_md"].exists()
+    assert not (tool_eval_dir / "training_history.csv").exists()
+    assert not (tool_eval_dir / "training_curves.svg").exists()
 
 
 def test_write_training_report_bundle_degrades_gracefully_without_confusions(tmp_path: Path):
@@ -438,7 +509,7 @@ def test_evaluate_surya_checkpoint_filters_by_modality(tmp_path: Path):
     )
 
     assert summary["num_rows"] == 1
-    assert (run_dir / "evaluation" / "summary_holdout_typed.json").exists()
+    assert (run_dir / "tool_evaluation" / "summary_holdout_typed.json").exists()
 
 
 def test_evaluate_surya_modalities_returns_combined_summary(tmp_path: Path):
@@ -485,4 +556,4 @@ def test_evaluate_surya_modalities_returns_combined_summary(tmp_path: Path):
     )
 
     assert set(summary["modalities"]) == {"typed", "synthetic"}
-    assert (run_dir / "evaluation" / "summary_holdout_modalities.json").exists()
+    assert (run_dir / "tool_evaluation" / "summary_holdout_modalities.json").exists()

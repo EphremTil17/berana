@@ -69,6 +69,13 @@ def _resolve_train_output_dir(
     return next_versioned_dir(Path("output/ocr_training_runs"), run_stem)
 
 
+def _resolve_tool_eval_output_dir(*, run_dir: Path, output_dir: Path | None) -> Path:
+    """Resolve the explicit or auto-versioned output directory for explicit tool evaluation."""
+    if output_dir is not None:
+        return output_dir
+    return next_versioned_dir(run_dir, "tool_evaluation")
+
+
 def _cli_is_rank_zero() -> bool:
     rank = os.environ.get("RANK", "0").strip()
     return not rank.isdigit() or int(rank) == 0
@@ -168,6 +175,22 @@ def _build_multi_gpu_launch_command(
     ]
 
 
+def _build_multi_gpu_eval_command(
+    *,
+    argv: list[str],
+    nproc_per_node: int,
+) -> list[str]:
+    """Construct the internal torchrun relaunch command for multi-GPU evaluation."""
+    forwarded = _strip_flag(_strip_flag(argv, "--multi-gpu"), "--single-gpu")
+    return [
+        *_torchrun_entrypoint(),
+        "--standalone",
+        f"--nproc_per_node={nproc_per_node}",
+        str(Path(sys.argv[0]).resolve()),
+        *forwarded,
+    ]
+
+
 def _maybe_relaunch_multi_gpu(
     *,
     multi_gpu: bool,
@@ -193,6 +216,26 @@ def _maybe_relaunch_multi_gpu(
     if _cli_is_rank_zero():
         log.info(
             "Launching multi-GPU Surya training with %s ranks via: %s",
+            nproc_per_node,
+            shlex.join(command),
+        )
+    completed = subprocess.run(command, check=False, env=_training_launch_env())
+    raise typer.Exit(code=completed.returncode)
+
+
+def _maybe_relaunch_multi_gpu_eval(*, multi_gpu: bool) -> None:
+    """Relaunch the current evaluation command under torchrun when requested."""
+    if not multi_gpu or torchrun_is_active():
+        return
+    nproc_per_node = _visible_cuda_device_count()
+    if nproc_per_node < 2:
+        raise typer.BadParameter(
+            "`--multi-gpu` requires at least 2 visible CUDA devices on this host."
+        )
+    command = _build_multi_gpu_eval_command(argv=sys.argv[1:], nproc_per_node=nproc_per_node)
+    if _cli_is_rank_zero():
+        log.info(
+            "Launching multi-GPU Surya evaluation with %s ranks via: %s",
             nproc_per_node,
             shlex.join(command),
         )
@@ -617,6 +660,34 @@ def cli_evaluate_surya(
         int,
         typer.Option("--seed", help="Deterministic seed for evaluation subsetting."),
     ] = 42,
+    checkpoint_target: Annotated[
+        str,
+        typer.Option(
+            "--checkpoint-target",
+            help="Which checkpoint to evaluate: best_cer, best_wer, or latest.",
+        ),
+    ] = "best_cer",
+    checkpoint_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--checkpoint-path",
+            help="Optional explicit checkpoint/adapter directory to evaluate.",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Optional output directory for evaluation artifacts. Defaults to <run-dir>/tool_evaluation.",
+        ),
+    ] = None,
+    multi_gpu: Annotated[
+        bool,
+        typer.Option(
+            "--multi-gpu/--single-gpu",
+            help="Use all visible local GPUs and relaunch under torchrun automatically.",
+        ),
+    ] = False,
 ):
     """Evaluate Surya checkpoint on untouched split and emit CER/WER summary artifacts."""
     split = split.strip().lower()
@@ -628,6 +699,16 @@ def cli_evaluate_surya(
         raise typer.BadParameter("--eval-batch-size must be >= 1.")
     if max_rows is not None and max_rows < 1:
         raise typer.BadParameter("--max-rows must be >= 1 when provided.")
+    checkpoint_target = checkpoint_target.strip().lower()
+    if checkpoint_target not in {"best_cer", "best_wer", "latest"}:
+        raise typer.BadParameter("--checkpoint-target must be one of: best_cer, best_wer, latest")
+
+    resolved_output_dir = _resolve_tool_eval_output_dir(run_dir=run_dir, output_dir=output_dir)
+    if output_dir is None and _cli_is_rank_zero():
+        log.info("Resolved tool evaluation output_dir=%s", resolved_output_dir)
+
+    _apply_training_env_defaults()
+    _maybe_relaunch_multi_gpu_eval(multi_gpu=multi_gpu)
 
     try:
         summary = evaluate_surya_checkpoint(
@@ -639,11 +720,16 @@ def cli_evaluate_surya(
             eval_batch_size=eval_batch_size,
             max_rows=max_rows,
             seed=seed,
+            checkpoint_target=checkpoint_target,
+            checkpoint_path=checkpoint_path,
+            output_dir=resolved_output_dir,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         log.error("evaluate-surya failed: %s", exc)
         raise typer.Exit(code=1) from exc
 
+    if summary.get("status") == "completed_nonzero_rank":
+        return
     log.info(
         "evaluate-surya complete split=%s rows=%d cer=%.4f wer=%.4f",
         split,
@@ -684,6 +770,34 @@ def cli_evaluate_surya_modalities(
         int,
         typer.Option("--seed", help="Deterministic seed for evaluation subsetting."),
     ] = 42,
+    checkpoint_target: Annotated[
+        str,
+        typer.Option(
+            "--checkpoint-target",
+            help="Which checkpoint to evaluate: best_cer, best_wer, or latest.",
+        ),
+    ] = "best_cer",
+    checkpoint_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--checkpoint-path",
+            help="Optional explicit checkpoint/adapter directory to evaluate.",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Optional output directory for evaluation artifacts. Defaults to <run-dir>/tool_evaluation.",
+        ),
+    ] = None,
+    multi_gpu: Annotated[
+        bool,
+        typer.Option(
+            "--multi-gpu/--single-gpu",
+            help="Use all visible local GPUs and relaunch under torchrun automatically.",
+        ),
+    ] = False,
     modalities: Annotated[
         str,
         typer.Option(
@@ -693,6 +807,15 @@ def cli_evaluate_surya_modalities(
     ] = "typed,synthetic",
 ):
     """Evaluate a run separately across typed/synthetic modalities."""
+    checkpoint_target = checkpoint_target.strip().lower()
+    if checkpoint_target not in {"best_cer", "best_wer", "latest"}:
+        raise typer.BadParameter("--checkpoint-target must be one of: best_cer, best_wer, latest")
+    resolved_output_dir = _resolve_tool_eval_output_dir(run_dir=run_dir, output_dir=output_dir)
+    if output_dir is None and _cli_is_rank_zero():
+        log.info("Resolved tool evaluation output_dir=%s", resolved_output_dir)
+    _apply_training_env_defaults()
+    _maybe_relaunch_multi_gpu_eval(multi_gpu=multi_gpu)
+
     try:
         summary = evaluate_surya_modalities(
             run_key=run_key,
@@ -704,11 +827,16 @@ def cli_evaluate_surya_modalities(
             max_rows=max_rows,
             seed=seed,
             modalities=sorted(_csv_to_set(modalities)),
+            checkpoint_target=checkpoint_target,
+            checkpoint_path=checkpoint_path,
+            output_dir=resolved_output_dir,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         log.error("evaluate-surya-modalities failed: %s", exc)
         raise typer.Exit(code=1) from exc
 
+    if summary.get("status") == "completed_nonzero_rank":
+        return
     log.info(
         "evaluate-surya-modalities complete split=%s modalities=%s",
         split,

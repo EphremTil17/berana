@@ -421,26 +421,66 @@ def evaluate_surya_checkpoint(
     max_rows: int | None = None,
     seed: int = 42,
     modality: str | None = None,
+    checkpoint_target: str = "best_cer",
+    checkpoint_path: Path | None = None,
+    output_dir: Path | None = None,
 ) -> dict[str, float | int | str]:
     """Evaluate Surya OCR predictions against target split labels."""
     runtime = require_surya()
-    return _evaluate_surya_checkpoint(
-        run_key=run_key,
-        run_dir=run_dir,
-        dataset_dir=dataset_dir,
-        split=split,
-        eval_fraction=eval_fraction,
-        eval_batch_size=eval_batch_size,
-        max_rows=max_rows,
-        seed=seed,
-        modality=modality,
-        runtime=runtime,
-        load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
-            runtime,
-            run_dir,
-            _load_finetune_meta,
-        ),
+    torch = runtime.get("torch")
+    if torch is None:
+        return _evaluate_surya_checkpoint(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split,
+            eval_fraction=eval_fraction,
+            eval_batch_size=eval_batch_size,
+            max_rows=max_rows,
+            seed=seed,
+            modality=modality,
+            output_dir=output_dir,
+            runtime=runtime,
+            load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
+                runtime,
+                run_dir,
+                _load_finetune_meta,
+                checkpoint_target=checkpoint_target,
+                checkpoint_path=checkpoint_path,
+            ),
+        )
+    distributed_context = initialize_distributed_context(
+        torch_module=torch,
+        requested_backend="auto",
+        ddp_backend="nccl",
     )
+    try:
+        return _evaluate_surya_checkpoint(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split,
+            eval_fraction=eval_fraction,
+            eval_batch_size=eval_batch_size,
+            max_rows=max_rows,
+            seed=seed,
+            modality=modality,
+            output_dir=output_dir,
+            runtime=runtime,
+            load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
+                runtime,
+                run_dir,
+                _load_finetune_meta,
+                checkpoint_target=checkpoint_target,
+                checkpoint_path=checkpoint_path,
+            ),
+            distributed_context=distributed_context,
+            torch_module=torch,
+        )
+    finally:
+        with suppress(Exception):
+            maybe_barrier(torch_module=torch, context=distributed_context)
+        destroy_distributed_context(torch_module=torch, context=distributed_context)
 
 
 def evaluate_surya_modalities(
@@ -454,23 +494,63 @@ def evaluate_surya_modalities(
     max_rows: int | None = None,
     seed: int = 42,
     modalities: list[str] | None = None,
+    checkpoint_target: str = "best_cer",
+    checkpoint_path: Path | None = None,
+    output_dir: Path | None = None,
 ) -> dict[str, object]:
     """Evaluate one run across typed/synthetic modalities using the existing evaluator."""
     runtime = require_surya()
-    return _evaluate_surya_modalities(
-        run_key=run_key,
-        run_dir=run_dir,
-        dataset_dir=dataset_dir,
-        split=split,
-        eval_fraction=eval_fraction,
-        eval_batch_size=eval_batch_size,
-        max_rows=max_rows,
-        seed=seed,
-        modalities=modalities or ["typed", "synthetic"],
-        runtime=runtime,
-        load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
-            runtime,
-            run_dir,
-            _load_finetune_meta,
-        ),
+    torch = runtime.get("torch")
+    if torch is None:
+        return _evaluate_surya_modalities(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split,
+            eval_fraction=eval_fraction,
+            eval_batch_size=eval_batch_size,
+            max_rows=max_rows,
+            seed=seed,
+            modalities=modalities or ["typed", "synthetic"],
+            output_dir=output_dir,
+            runtime=runtime,
+            load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
+                runtime,
+                run_dir,
+                _load_finetune_meta,
+                checkpoint_target=checkpoint_target,
+                checkpoint_path=checkpoint_path,
+            ),
+        )
+    distributed_context = initialize_distributed_context(
+        torch_module=torch,
+        requested_backend="auto",
+        ddp_backend="nccl",
     )
+    try:
+        return _evaluate_surya_modalities(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split,
+            eval_fraction=eval_fraction,
+            eval_batch_size=eval_batch_size,
+            max_rows=max_rows,
+            seed=seed,
+            modalities=modalities or ["typed", "synthetic"],
+            output_dir=output_dir,
+            runtime=runtime,
+            load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
+                runtime,
+                run_dir,
+                _load_finetune_meta,
+                checkpoint_target=checkpoint_target,
+                checkpoint_path=checkpoint_path,
+            ),
+            distributed_context=distributed_context,
+            torch_module=torch,
+        )
+    finally:
+        with suppress(Exception):
+            maybe_barrier(torch_module=torch, context=distributed_context)
+        destroy_distributed_context(torch_module=torch, context=distributed_context)

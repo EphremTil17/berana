@@ -6,9 +6,11 @@ from typer.testing import CliRunner
 from modules.ocr_training.schemas import TrainMode
 from tools.ocr_training import (
     _apply_training_env_defaults,
+    _build_multi_gpu_eval_command,
     _build_multi_gpu_launch_command,
     _dataset_run_stem,
     _merge_pytorch_alloc_conf,
+    _resolve_tool_eval_output_dir,
     _resolve_train_output_dir,
     _strip_version_suffix,
     _training_launch_env,
@@ -70,6 +72,15 @@ def test_resolve_train_output_dir_preserves_explicit_override(tmp_path: Path):
     assert resolved == explicit
 
 
+def test_resolve_tool_eval_output_dir_defaults_to_versioned_run_dir(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    (run_dir / "tool_evaluation_v01").mkdir(parents=True)
+
+    resolved = _resolve_tool_eval_output_dir(run_dir=run_dir, output_dir=None)
+
+    assert resolved == run_dir / "tool_evaluation_v02"
+
+
 def test_visible_cuda_device_count_prefers_cuda_visible_devices(monkeypatch):
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0,2,5")
 
@@ -98,6 +109,26 @@ def test_build_multi_gpu_launch_command_strips_flag_and_pins_output_dir(
     assert command[:3] == ["torchrun", "--standalone", "--nproc_per_node=4"]
     assert "--multi-gpu" not in command
     assert command[-2:] == ["--output-dir", str(tmp_path / "run_dir")]
+
+
+def test_build_multi_gpu_eval_command_strips_flag(monkeypatch):
+    monkeypatch.setattr("tools.ocr_training._torchrun_entrypoint", lambda: ["torchrun"])
+    monkeypatch.setattr("tools.ocr_training.sys.argv", ["tools/ocr_training.py", "evaluate-surya"])
+
+    command = _build_multi_gpu_eval_command(
+        argv=[
+            "evaluate-surya",
+            "--run-dir",
+            "output/run",
+            "--multi-gpu",
+            "--split",
+            "holdout",
+        ],
+        nproc_per_node=2,
+    )
+
+    assert command[:3] == ["torchrun", "--standalone", "--nproc_per_node=2"]
+    assert "--multi-gpu" not in command
 
 
 def test_merge_pytorch_alloc_conf_adds_expandable_segments():

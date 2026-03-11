@@ -8,7 +8,7 @@ from typing import Any
 from PIL import Image
 from tqdm import tqdm
 
-from modules.ocr_benchmark.metrics import calculate_cer_wer, normalize_ethiopic_text
+from modules.ocr_benchmark.metrics import calculate_cer_wer_paper
 from modules.ocr_training.registry import STAGE_SURYA_EVALUATE, register_training_stage
 from modules.ocr_training.surya_common import (
     deterministic_sample_rows,
@@ -20,7 +20,6 @@ from modules.ocr_training.surya_common import (
 )
 from modules.ocr_training.surya_reports import (
     write_confusion_artifacts,
-    write_training_history_artifacts,
     write_training_report_bundle,
 )
 
@@ -52,6 +51,17 @@ def _chunk_rows(rows: list[dict[str, str]], batch_size: int) -> list[list[dict[s
     return [rows[index : index + batch_size] for index in range(0, len(rows), batch_size)]
 
 
+def _shard_rows_for_rank(
+    rows: list[dict[str, str]],
+    *,
+    rank: int,
+    world_size: int,
+) -> list[dict[str, str]]:
+    if world_size <= 1:
+        return rows
+    return [row for index, row in enumerate(rows) if index % world_size == rank]
+
+
 def evaluate_surya_checkpoint(
     *,
     run_key: str,
@@ -65,6 +75,9 @@ def evaluate_surya_checkpoint(
     modality: str | None = None,
     runtime,
     load_surya_eval_predictor,
+    distributed_context=None,
+    torch_module=None,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate Surya OCR predictions against target split labels."""
     rows = load_split_rows(dataset_dir, split)
@@ -75,16 +88,20 @@ def evaluate_surya_checkpoint(
         rows = subset_rows(rows, fraction=eval_fraction, seed=seed)
     if max_rows is not None and len(rows) > max_rows:
         rows = deterministic_sample_rows(rows, max_rows=max_rows, seed=seed)
+    rank = int(getattr(distributed_context, "rank", 0) if distributed_context else 0)
+    world_size = int(getattr(distributed_context, "world_size", 1) if distributed_context else 1)
+    local_rows = _shard_rows_for_rank(rows, rank=rank, world_size=world_size)
     foundation_predictor = load_surya_eval_predictor(runtime, run_dir)
     predictor = runtime["RecognitionPredictor"](foundation_predictor)
     predictor.disable_tqdm = True
 
     records = []
     for row_batch in tqdm(
-        _chunk_rows(rows, max(1, eval_batch_size)),
+        _chunk_rows(local_rows, max(1, eval_batch_size)),
         desc=f"Evaluate {split}",
         unit="batch",
         dynamic_ncols=True,
+        disable=bool(distributed_context and not distributed_context.is_rank_zero),
     ):
         images = []
         bboxes = []
@@ -106,9 +123,7 @@ def evaluate_surya_checkpoint(
                 sanitize_prediction_text(result.text_lines[0].text) if result.text_lines else ""
             )
             gt_text = row["text"]
-            norm_pred = normalize_ethiopic_text(raw_pred)
-            norm_gt = normalize_ethiopic_text(gt_text)
-            cer, wer, exact = calculate_cer_wer(norm_pred, norm_gt)
+            cer, wer, exact = calculate_cer_wer_paper(raw_pred, gt_text)
             records.append(
                 {
                     "image": row["image"],
@@ -119,11 +134,23 @@ def evaluate_surya_checkpoint(
                     "exact": exact,
                 }
             )
+    if distributed_context and distributed_context.is_distributed:
+        gathered_records: list[list[dict[str, Any]] | None] = [
+            None
+        ] * distributed_context.world_size
+        torch_module.distributed.all_gather_object(gathered_records, records)
+        if not distributed_context.is_rank_zero:
+            return {
+                "status": "completed_nonzero_rank",
+                "rank": distributed_context.rank,
+                "num_rows": len(records),
+            }
+        records = [record for chunk in gathered_records if chunk for record in chunk]
 
     mean_cer = float(mean(r["cer"] for r in records)) if records else 1.0
     mean_wer = float(mean(r["wer"] for r in records)) if records else 1.0
     exact_rate = float(mean(1.0 if r["exact"] else 0.0 for r in records)) if records else 0.0
-    eval_dir = run_dir / "evaluation"
+    eval_dir = output_dir or (run_dir / "tool_evaluation")
     eval_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"{split}_{modality}" if modality else split
     predictions_path = eval_dir / f"predictions_{suffix}.jsonl"
@@ -135,6 +162,7 @@ def evaluate_surya_checkpoint(
         "split": split,
         "modality": modality,
         "num_rows": len(records),
+        "world_size": world_size,
         "eval_fraction": eval_fraction,
         "eval_batch_size": eval_batch_size,
         "max_rows": max_rows,
@@ -170,13 +198,13 @@ def evaluate_surya_checkpoint(
     report_artifacts.update(
         write_confusion_artifacts(eval_dir=eval_dir, split=suffix, records=records)
     )
-    report_artifacts.update(write_training_history_artifacts(run_dir=run_dir, eval_dir=eval_dir))
     report_artifacts.update(
         write_training_report_bundle(
             run_dir=run_dir,
             output_dir=eval_dir,
             split=suffix,
             predictions_path=predictions_path,
+            include_training_artifacts=False,
         )
     )
     register_training_stage(
@@ -196,6 +224,7 @@ def evaluate_surya_checkpoint(
             "status": "completed",
             "split": split,
             "num_rows": len(records),
+            "world_size": world_size,
             "eval_fraction": eval_fraction,
             "eval_batch_size": eval_batch_size,
             "max_rows": max_rows,
@@ -221,6 +250,9 @@ def evaluate_surya_modalities(
     modalities: list[str],
     runtime,
     load_surya_eval_predictor,
+    distributed_context=None,
+    torch_module=None,
+    output_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate one checkpoint separately across requested typed/synthetic modalities."""
     modality_summaries: dict[str, Any] = {}
@@ -237,8 +269,17 @@ def evaluate_surya_modalities(
             modality=modality,
             runtime=runtime,
             load_surya_eval_predictor=load_surya_eval_predictor,
+            distributed_context=distributed_context,
+            torch_module=torch_module,
+            output_dir=output_dir,
         )
-    eval_dir = run_dir / "evaluation"
+    if distributed_context and not distributed_context.is_rank_zero:
+        return {
+            "split": split,
+            "modalities": modality_summaries,
+            "status": "completed_nonzero_rank",
+        }
+    eval_dir = output_dir or (run_dir / "tool_evaluation")
     combined_summary_path = eval_dir / f"summary_{split}_modalities.json"
     combined_payload = {
         "split": split,

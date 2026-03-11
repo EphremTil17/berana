@@ -203,3 +203,44 @@ def test_plateau_warning_callback_warns_without_stopping(monkeypatch, tmp_path: 
     assert control.should_training_stop is False
     assert warnings
     assert "training_history.csv" in warnings[0]
+    warnings_path = tmp_path / "evaluation" / "plateau_warnings.jsonl"
+    assert warnings_path.exists()
+    assert "evals_since_best_cer" in warnings_path.read_text(encoding="utf-8")
+
+
+def test_plateau_warning_callback_warns_on_sustained_regression(monkeypatch, tmp_path: Path):
+    warnings: list[str] = []
+    callback = PlateauWarningCallback(tmp_path)
+    monkeypatch.setattr(
+        "modules.ocr_training.checkpointing.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    args = object()
+    control = type("Control", (), {"should_training_stop": False})()
+    state = type(
+        "State",
+        (),
+        {
+            "global_step": 100,
+            "log_history": [{"step": 20, "loss": 4.0}, {"step": 40, "loss": 3.0}],
+        },
+    )()
+
+    eval_points = [
+        (100, 0.8192, 4.8460),
+        (200, 0.6728, 4.7498),
+        (300, 0.7272, 6.5203),
+        (400, 0.7359, 8.7998),
+        (500, 0.7292, 7.1436),
+        (600, 0.7369, 8.7998),
+        (700, 0.7315, 7.0180),
+        (800, 0.7381, 7.8094),
+        (900, 0.7398, 7.2985),
+        (1000, 0.7436, 7.9194),
+    ]
+    for step, cer, wer in eval_points:
+        state.global_step = step
+        callback.on_evaluate(args, state, control, metrics={"eval_cer": cer, "eval_wer": wer})
+
+    assert warnings
+    assert "current CER gap" in warnings[0]

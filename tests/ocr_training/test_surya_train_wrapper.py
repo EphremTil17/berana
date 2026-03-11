@@ -28,6 +28,9 @@ def test_evaluate_surya_checkpoint_wrapper_forwards_extended_eval_args(monkeypat
         eval_batch_size=16,
         max_rows=500,
         seed=7,
+        checkpoint_target="latest",
+        checkpoint_path=Path("/tmp/run/checkpoint-500"),
+        output_dir=Path("/tmp/run/tool_evaluation"),
     )
 
     assert summary["mean_cer"] == 0.1
@@ -35,6 +38,9 @@ def test_evaluate_surya_checkpoint_wrapper_forwards_extended_eval_args(monkeypat
     assert captured["eval_batch_size"] == 16
     assert captured["max_rows"] == 500
     assert captured["seed"] == 7
+    assert captured["output_dir"] == Path("/tmp/run/tool_evaluation")
+    load_predictor = captured["load_surya_eval_predictor"]
+    assert callable(load_predictor)
 
 
 def test_evaluate_surya_modalities_wrapper_forwards_modalities(monkeypatch):
@@ -60,10 +66,14 @@ def test_evaluate_surya_modalities_wrapper_forwards_modalities(monkeypatch):
         max_rows=100,
         seed=9,
         modalities=["typed", "synthetic"],
+        checkpoint_target="best_wer",
+        checkpoint_path=Path("/tmp/run/checkpoint-200"),
+        output_dir=Path("/tmp/run/tool_evaluation"),
     )
 
     assert set(summary["modalities"]) == {"typed", "synthetic"}
     assert captured["modalities"] == ["typed", "synthetic"]
+    assert captured["output_dir"] == Path("/tmp/run/tool_evaluation")
 
 
 def test_run_surya_finetune_barriers_before_destroy_on_interrupt(monkeypatch, tmp_path: Path):
