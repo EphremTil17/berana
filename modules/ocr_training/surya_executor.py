@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from modules.ocr_training.checkpointing import (
-    BestCerCheckpointCallback,
-    BestWerCheckpointCallback,
+    AuthoritativeCheckpointEvalCallback,
     PlateauWarningCallback,
     TrainingArtifactsCallback,
     TrainingSignalState,
@@ -38,12 +37,14 @@ from modules.ocr_training.surya_artifacts import (
 )
 from modules.ocr_training.surya_common import resolve_resume_checkpoint
 from modules.ocr_training.surya_data import LocalSuryaOCRDataset, SuryaOCRDataCollator
+from modules.ocr_training.surya_eval import (
+    build_in_memory_eval_predictor,
+    evaluate_surya_rows,
+)
 from modules.ocr_training.surya_patches import (
     build_eval_cleanup_callback,
     build_eval_interrupt_discard_callback,
     build_interrupt_callback,
-    build_preprocess_logits_for_metrics,
-    compute_metrics_factory,
 )
 from modules.ocr_training.surya_reports import write_training_report_bundle
 from modules.ocr_training.surya_training_args import (
@@ -137,23 +138,29 @@ def _register_interrupted_training(
 
 def _resolve_effective_best_metric(*, candidate: TrainingCandidate, compute_metrics, logger):
     """Return the effective best-model metric configuration for this run."""
+    del compute_metrics, logger
     metric_name = candidate.metric_for_best_model.strip().lower()
-    if compute_metrics is None and metric_name == "cer":
-        log_warning = getattr(logger, "warning", lambda *args, **kwargs: None)
-        log_warning(
-            "CER metrics are unavailable for this processor/runtime; falling back to eval_loss "
-            "for best-model selection on this run."
+    if metric_name in {"wer", "eval_wer"}:
+        return (
+            candidate.model_copy(
+                update={
+                    "load_best_model_at_end": False,
+                    "metric_for_best_model": "eval_loss",
+                    "greater_is_better": False,
+                }
+            ),
+            "eval_wer",
         )
-        return candidate.model_copy(
+    return (
+        candidate.model_copy(
             update={
+                "load_best_model_at_end": False,
                 "metric_for_best_model": "eval_loss",
                 "greater_is_better": False,
             }
-        ), "eval_loss"
-
-    if metric_name == "cer":
-        return candidate, "eval_cer"
-    return candidate, candidate.metric_for_best_model
+        ),
+        "eval_cer",
+    )
 
 
 def _attach_training_callbacks(
@@ -171,6 +178,7 @@ def _attach_training_callbacks(
     termination_coordinator,
     logger,
     epoch_logging_callback_cls,
+    authoritative_eval_runner,
 ) -> None:
     """Attach rank-safe training, eval, and guard callbacks to one trainer."""
     trainer_args = getattr(trainer, "args", None)
@@ -189,6 +197,9 @@ def _attach_training_callbacks(
         )
 
     if eval_enabled:
+        plateau_callback = (
+            PlateauWarningCallback(trainer_output_dir) if distributed_context.is_rank_zero else None
+        )
         trainer.add_callback(
             build_eval_interrupt_discard_callback(
                 signal_state,
@@ -196,23 +207,15 @@ def _attach_training_callbacks(
                 logger,
             )
         )
-        if distributed_context.is_rank_zero:
-            trainer.add_callback(
-                BestCerCheckpointCallback(
-                    output_dir=trainer_output_dir,
-                    metric_name=checkpoint_metric_name,
-                )
+        trainer.add_callback(
+            AuthoritativeCheckpointEvalCallback(
+                trainer_output_dir,
+                eval_runner=authoritative_eval_runner,
+                distributed_context=distributed_context,
+                torch_module=torch,
+                plateau_callback=plateau_callback,
             )
-            if checkpoint_metric_name != "eval_wer":
-                trainer.add_callback(
-                    BestWerCheckpointCallback(
-                        output_dir=trainer_output_dir,
-                        metric_name="eval_wer",
-                        weights_subdir="best_checkpoint_wer",
-                        meta_filename="best_wer_model_meta.json",
-                    )
-                )
-            trainer.add_callback(PlateauWarningCallback(trainer_output_dir))
+        )
         trainer.add_callback(
             build_eval_cleanup_callback(
                 torch_module=torch,
@@ -479,7 +482,7 @@ def run_training_candidate(  # noqa: C901
         max_sequence_length=candidate.max_sequence_length,
         task_name=runtime["TaskNames"].ocr_with_boxes,
     )
-    compute_metrics = compute_metrics_factory(processor)
+    compute_metrics = None
     eval_enabled = candidate.eval_steps is not None and len(val_rows) > 0
     save_enabled = candidate.save_steps is not None and candidate.save_steps > 0
     effective_candidate, checkpoint_metric_name = _resolve_effective_best_metric(
@@ -510,10 +513,58 @@ def run_training_candidate(  # noqa: C901
         eval_dataset=val_dataset if eval_enabled else None,
         data_collator=collator,
         compute_metrics=compute_metrics if eval_enabled else None,
-        preprocess_logits_for_metrics=build_preprocess_logits_for_metrics()
-        if eval_enabled and compute_metrics is not None
-        else None,
+        preprocess_logits_for_metrics=None,
     )
+
+    def _authoritative_eval_runner(
+        *,
+        checkpoint_path: Path,
+        state,
+        _trainer=trainer,
+        _processor=processor,
+        _training_args=training_args,
+    ):
+        del checkpoint_path
+        base_model = getattr(_trainer.model, "module", _trainer.model)
+        was_training = bool(getattr(base_model, "training", False))
+        base_model.eval()
+        try:
+            predictor = build_in_memory_eval_predictor(
+                runtime=runtime,
+                model=base_model,
+                processor=_processor,
+            )
+            checkpoint_eval_dir = (
+                output_dir
+                / "evaluation"
+                / "checkpoint_eval"
+                / f"checkpoint-{int(state.global_step or 0)}"
+            )
+            return evaluate_surya_rows(
+                run_key=None,
+                run_dir=output_dir,
+                rows=val_rows,
+                split="val",
+                eval_fraction=float(config.eval_fraction),
+                max_rows=config.eval_max_rows,
+                eval_batch_size=_training_args.per_device_eval_batch_size
+                or effective_candidate.per_device_train_batch_size,
+                seed=int(config.seed),
+                modality=None,
+                predictor=predictor,
+                runtime=runtime,
+                distributed_context=distributed_context,
+                torch_module=torch,
+                output_dir=checkpoint_eval_dir,
+                register_stage=False,
+                include_predictions=False,
+                include_confusions=False,
+                include_report_bundle=False,
+            )
+        finally:
+            if was_training:
+                base_model.train()
+
     _attach_training_callbacks(
         trainer=trainer,
         runtime=runtime,
@@ -528,6 +579,7 @@ def run_training_candidate(  # noqa: C901
         termination_coordinator=termination_coordinator,
         logger=logger,
         epoch_logging_callback_cls=epoch_logging_callback_cls,
+        authoritative_eval_runner=_authoritative_eval_runner,
     )
     result = None
     try:

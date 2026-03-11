@@ -306,7 +306,7 @@ def test_build_training_arguments_omits_none_max_steps():
     assert "max_steps" not in captured
 
 
-def test_resolve_effective_best_metric_falls_back_to_eval_loss_without_metrics():
+def test_resolve_effective_best_metric_uses_authoritative_eval_selection():
     candidate = _candidate("train")
 
     effective_candidate, metric_name = _resolve_effective_best_metric(
@@ -315,9 +315,10 @@ def test_resolve_effective_best_metric_falls_back_to_eval_loss_without_metrics()
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
     )
 
-    assert metric_name == "eval_loss"
+    assert metric_name == "eval_cer"
     assert effective_candidate.metric_for_best_model == "eval_loss"
     assert effective_candidate.greater_is_better is False
+    assert effective_candidate.load_best_model_at_end is False
 
 
 def test_should_retry_for_memory_pressure_matches_oom_and_vram_guard():

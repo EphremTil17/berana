@@ -88,6 +88,51 @@ def write_resume_state(
     return resume_path
 
 
+def _checkpoint_eval_history_path(output_dir: Path) -> Path:
+    return output_dir / "evaluation" / "checkpoint_eval_history.jsonl"
+
+
+def _checkpoint_eval_failures_path(output_dir: Path) -> Path:
+    return output_dir / "evaluation" / "checkpoint_eval_failures.jsonl"
+
+
+def append_checkpoint_eval_result(output_dir: Path, payload: dict[str, Any]) -> Path:
+    """Append one authoritative checkpoint-eval summary row."""
+    path = _checkpoint_eval_history_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_round_artifact_value(payload), ensure_ascii=False) + "\n")
+    return path
+
+
+def load_checkpoint_eval_history(output_dir: Path) -> list[dict[str, Any]]:
+    """Load authoritative checkpoint-eval summaries if present."""
+    path = _checkpoint_eval_history_path(output_dir)
+    records: list[dict[str, Any]] = []
+    if not path.exists():
+        return records
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            records.append(payload)
+    return records
+
+
+def append_checkpoint_eval_failure(output_dir: Path, payload: dict[str, Any]) -> Path:
+    """Append one checkpoint-eval failure row for later inspection."""
+    path = _checkpoint_eval_failures_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_round_artifact_value(payload), ensure_ascii=False) + "\n")
+    return path
+
+
 def update_best_checkpoint_pointer(
     output_dir: Path,
     *,
@@ -417,6 +462,30 @@ class PlateauWarningCallback(_TrainerCallback):
         self._best_eval_index = -1
         self._last_warning_eval_index = -1
         self._warnings_path = self.output_dir / "evaluation" / "plateau_warnings.jsonl"
+        for record in load_checkpoint_eval_history(self.output_dir):
+            cer = record.get("eval_cer")
+            wer = record.get("eval_wer")
+            step = record.get("step")
+            if cer is None or wer is None or step is None:
+                continue
+            self._record_eval_point(step=float(step), cer=float(cer), wer=float(wer))
+
+    def _record_eval_point(
+        self, *, step: float, cer: float, wer: float
+    ) -> tuple[int, dict[str, float]]:
+        current = {
+            "step": float(step),
+            "cer": float(cer),
+            "wer": float(wer),
+        }
+        self._eval_history.append(current)
+        eval_index = len(self._eval_history) - 1
+        if self._best_cer is None or current["cer"] < self._best_cer:
+            self._best_cer = current["cer"]
+            self._best_eval_index = eval_index
+        if self._best_wer is None or current["wer"] < self._best_wer:
+            self._best_wer = current["wer"]
+        return eval_index, current
 
     def _append_warning_artifact(self, payload: dict[str, Any]) -> None:
         self._warnings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,34 +544,41 @@ class PlateauWarningCallback(_TrainerCallback):
         wer = metrics.get("eval_wer")
         if cer is None or wer is None:
             return control
-        current = {
-            "step": float(state.global_step or 0),
-            "cer": float(cer),
-            "wer": float(wer),
-        }
-        self._eval_history.append(current)
-        eval_index = len(self._eval_history) - 1
-        if self._best_cer is None or current["cer"] < self._best_cer:
-            self._best_cer = current["cer"]
-            self._best_eval_index = eval_index
-        if self._best_wer is None or current["wer"] < self._best_wer:
-            self._best_wer = current["wer"]
-        if eval_index == self._best_eval_index:
-            return control
-        evals_since_best = eval_index - self._best_eval_index
-        if self._should_skip_warning(eval_index=eval_index, evals_since_best=evals_since_best):
-            return control
-
-        recent = self._eval_history[-self.patience_evals :]
-        plateau_state = self._evaluate_plateau_state(current=current, recent=recent)
-        if not plateau_state["flat_recent_window"] and not plateau_state["sustained_regression"]:
-            return control
-
         train_losses = [
             float(item["loss"])
             for item in list(getattr(state, "log_history", None) or [])
             if item.get("loss") is not None
         ]
+        self.observe_authoritative_eval_result(
+            step=int(state.global_step or 0),
+            cer=float(cer),
+            wer=float(wer),
+            train_losses=train_losses,
+        )
+        return control
+
+    def observe_authoritative_eval_result(
+        self,
+        *,
+        step: int,
+        cer: float,
+        wer: float,
+        train_losses: list[float] | None = None,
+    ) -> None:
+        """Record one authoritative OCR-eval result and emit a warning if the run has plateaued."""
+        eval_index, current = self._record_eval_point(step=float(step), cer=cer, wer=wer)
+        if eval_index == self._best_eval_index:
+            return
+        evals_since_best = eval_index - self._best_eval_index
+        if self._should_skip_warning(eval_index=eval_index, evals_since_best=evals_since_best):
+            return
+
+        recent = self._eval_history[-self.patience_evals :]
+        plateau_state = self._evaluate_plateau_state(current=current, recent=recent)
+        if not plateau_state["flat_recent_window"] and not plateau_state["sustained_regression"]:
+            return
+
+        train_losses = train_losses or []
         train_loss_note = ""
         if len(train_losses) >= 2 and train_losses[-1] < train_losses[-2]:
             train_loss_note = " Train loss is still falling, so this may be overfitting rather than optimization failure."
@@ -539,6 +615,154 @@ class PlateauWarningCallback(_TrainerCallback):
             train_loss_note,
         )
         self._last_warning_eval_index = eval_index
+        return None
+
+
+class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
+    """Evaluate saved checkpoints with real OCR inference and update best-metric state."""
+
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        eval_runner,
+        distributed_context,
+        torch_module,
+        plateau_callback: PlateauWarningCallback | None = None,
+    ):
+        """Bind checkpoint-eval orchestration to one training run."""
+        self.output_dir = output_dir
+        self.eval_runner = eval_runner
+        self.distributed_context = distributed_context
+        self.torch_module = torch_module
+        self.plateau_callback = plateau_callback
+        history = load_checkpoint_eval_history(output_dir)
+        self._best_cer = min(
+            (float(item["eval_cer"]) for item in history if item.get("eval_cer") is not None),
+            default=None,
+        )
+        self._best_wer = min(
+            (float(item["eval_wer"]) for item in history if item.get("eval_wer") is not None),
+            default=None,
+        )
+        self._last_completed_step = max(
+            (int(item["step"]) for item in history if item.get("step") is not None),
+            default=-1,
+        )
+
+    def _sync_ranks(self) -> None:
+        if not self.distributed_context.is_distributed:
+            return
+        try:
+            self.torch_module.distributed.barrier(device_ids=[self.distributed_context.local_rank])
+        except TypeError:
+            self.torch_module.distributed.barrier()
+
+    def _failure_payload(
+        self, *, checkpoint_path: Path, step: int, exc: Exception
+    ) -> dict[str, Any]:
+        return {
+            "step": step,
+            "checkpoint_path": str(checkpoint_path),
+            "status": "failed",
+            "error": str(exc),
+        }
+
+    def _record_success(
+        self, *, checkpoint_path: Path, checkpoint_step: int, summary: dict[str, Any], state
+    ) -> None:
+        result_payload = {
+            "source": "authoritative_checkpoint_eval",
+            "step": checkpoint_step,
+            "checkpoint_path": str(checkpoint_path),
+            "split": summary.get("split", "val"),
+            "num_rows": summary.get("num_rows"),
+            "world_size": summary.get("world_size"),
+            "eval_fraction": summary.get("eval_fraction"),
+            "eval_batch_size": summary.get("eval_batch_size"),
+            "max_rows": summary.get("max_rows"),
+            "seed": summary.get("seed"),
+            "eval_cer": summary.get("mean_cer"),
+            "eval_wer": summary.get("mean_wer"),
+            "eval_exact": summary.get("exact_rate"),
+        }
+        append_checkpoint_eval_result(self.output_dir, result_payload)
+
+        current_cer = float(summary["mean_cer"])
+        current_wer = float(summary["mean_wer"])
+        if self._best_cer is None or current_cer < self._best_cer:
+            self._best_cer = current_cer
+            update_best_checkpoint_pointer(
+                self.output_dir,
+                checkpoint_path=checkpoint_path,
+                metric_name="eval_cer",
+                metric_value=current_cer,
+                global_step=checkpoint_step,
+            )
+        if self._best_wer is None or current_wer < self._best_wer:
+            self._best_wer = current_wer
+            update_best_checkpoint_pointer(
+                self.output_dir,
+                checkpoint_path=checkpoint_path,
+                metric_name="eval_wer",
+                metric_value=current_wer,
+                global_step=checkpoint_step,
+                weights_subdir="best_checkpoint_wer",
+                meta_filename="best_wer_model_meta.json",
+            )
+        if self.plateau_callback is not None:
+            train_losses = [
+                float(item["loss"])
+                for item in list(getattr(state, "log_history", None) or [])
+                if item.get("loss") is not None
+            ]
+            self.plateau_callback.observe_authoritative_eval_result(
+                step=checkpoint_step,
+                cer=current_cer,
+                wer=current_wer,
+                train_losses=train_losses,
+            )
+        self._last_completed_step = checkpoint_step
+
+    def on_save(self, args, state, control, **kwargs):
+        """Run authoritative OCR evaluation after each saved checkpoint."""
+        del kwargs
+        checkpoint_path = resolve_latest_checkpoint(Path(args.output_dir))
+        if checkpoint_path is None:
+            return control
+        checkpoint_step = int(checkpoint_path.name.removeprefix("checkpoint-"))
+        if checkpoint_step <= self._last_completed_step:
+            return control
+
+        self._sync_ranks()
+        try:
+            summary = self.eval_runner(checkpoint_path=checkpoint_path, state=state)
+        except Exception as exc:
+            if self.distributed_context.is_rank_zero:
+                append_checkpoint_eval_failure(
+                    self.output_dir,
+                    self._failure_payload(
+                        checkpoint_path=checkpoint_path,
+                        step=checkpoint_step,
+                        exc=exc,
+                    ),
+                )
+                logger.warning(
+                    "Authoritative checkpoint eval failed for %s: %s",
+                    checkpoint_path,
+                    exc,
+                )
+            return control
+        finally:
+            self._sync_ranks()
+
+        if summary.get("status") != "completed_nonzero_rank":
+            self._record_success(
+                checkpoint_path=checkpoint_path,
+                checkpoint_step=checkpoint_step,
+                summary=summary,
+                state=state,
+            )
         return control
 
 

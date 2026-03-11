@@ -190,6 +190,41 @@ def test_write_training_history_artifacts_summary_includes_plateau_warning(tmp_p
     assert summary["latest_plateau_warning"]["step"] == 120
 
 
+def test_write_training_history_artifacts_prefers_authoritative_checkpoint_eval_metrics(
+    tmp_path: Path,
+):
+    run_dir = tmp_path / "run"
+    eval_dir = run_dir / "evaluation"
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    trainer_state = {
+        "log_history": [
+            {"step": 20, "loss": 1.2, "epoch": 0.1},
+            {"step": 20, "eval_loss": 0.4, "epoch": 0.2},
+        ]
+    }
+    (run_dir / "trainer_state.json").write_text(json.dumps(trainer_state), encoding="utf-8")
+    (eval_dir / "checkpoint_eval_history.jsonl").write_text(
+        json.dumps(
+            {
+                "step": 20,
+                "eval_cer": 0.03,
+                "eval_wer": 0.07,
+                "eval_exact": 0.75,
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    artifacts = write_training_history_artifacts(run_dir=run_dir, eval_dir=eval_dir)
+
+    csv_text = artifacts["training_history_csv"].read_text(encoding="utf-8")
+    summary = json.loads(artifacts["training_summary_json"].read_text(encoding="utf-8"))
+    assert "0.03" in csv_text
+    assert summary["best_eval_by_cer"]["eval_cer"] == 0.03
+
+
 def test_write_training_history_artifacts_merges_timing_sidecar(tmp_path: Path):
     run_dir = tmp_path / "run"
     eval_dir = run_dir / "evaluation"

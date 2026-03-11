@@ -95,6 +95,14 @@ def _load_plateau_warnings(run_dir: Path) -> list[dict[str, Any]]:
     return _read_jsonl(run_dir / "evaluation" / "plateau_warnings.jsonl")
 
 
+def _load_authoritative_eval_history(run_dir: Path) -> list[dict[str, Any]]:
+    return _read_jsonl(run_dir / "evaluation" / "checkpoint_eval_history.jsonl")
+
+
+def _load_checkpoint_eval_failures(run_dir: Path) -> list[dict[str, Any]]:
+    return _read_jsonl(run_dir / "evaluation" / "checkpoint_eval_failures.jsonl")
+
+
 def _latest_checkpoint_step(run_dir: Path) -> int | None:
     from modules.ocr_training.checkpointing import resolve_latest_checkpoint
 
@@ -248,6 +256,44 @@ def _history_rows(
     return rows, train_loss_points, eval_loss_points, eval_cer_points, eval_wer_points
 
 
+def _merge_authoritative_eval_history(
+    *,
+    log_history: list[dict[str, Any]],
+    authoritative_eval_history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge authoritative checkpoint-eval metrics into trainer log history by step."""
+    merged = [dict(item) for item in log_history]
+    for eval_item in authoritative_eval_history:
+        step = int(eval_item.get("step", 0))
+        payload = {
+            "step": step,
+            "eval_cer": eval_item.get("eval_cer"),
+            "eval_wer": eval_item.get("eval_wer"),
+            "eval_exact": eval_item.get("eval_exact"),
+        }
+        target = None
+        for item in merged:
+            if int(item.get("step", -1)) == step and item.get("eval_loss") is not None:
+                target = item
+                break
+        if target is None:
+            for item in merged:
+                if int(item.get("step", -1)) == step:
+                    target = item
+                    break
+        if target is None:
+            merged.append(payload)
+        else:
+            target.update({key: value for key, value in payload.items() if value is not None})
+    merged.sort(
+        key=lambda item: (
+            float(item.get("step", 0)),
+            0 if item.get("loss") is not None and item.get("eval_loss") is None else 1,
+        )
+    )
+    return merged
+
+
 def _load_best_checkpoint_meta(run_dir: Path, name: str) -> dict[str, Any] | None:
     return _read_json(run_dir / name)
 
@@ -267,6 +313,7 @@ def _training_summary(run_dir: Path, log_history: list[dict[str, Any]]) -> dict[
     finetune_meta = _load_finetune_context(run_dir)
     trainer_state = _trainer_state_payload(run_dir)
     plateau_warnings = _load_plateau_warnings(run_dir)
+    checkpoint_eval_failures = _load_checkpoint_eval_failures(run_dir)
     train_fraction = finetune_meta.get("train_fraction")
     selection_metric = str(finetune_meta.get("effective_metric_for_best_model", "eval_cer"))
     cer_meta = _load_best_checkpoint_meta(run_dir, "best_model_meta.json")
@@ -310,6 +357,10 @@ def _training_summary(run_dir: Path, log_history: list[dict[str, Any]]) -> dict[
         "evals_since_best_cer": evals_since_best_cer,
         "plateau_warning_count": len(plateau_warnings),
         "latest_plateau_warning": plateau_warnings[-1] if plateau_warnings else None,
+        "checkpoint_eval_failure_count": len(checkpoint_eval_failures),
+        "latest_checkpoint_eval_failure": (
+            checkpoint_eval_failures[-1] if checkpoint_eval_failures else None
+        ),
         "train_fraction": train_fraction,
         "notes": notes,
     }
@@ -347,7 +398,12 @@ def load_training_log_history(run_dir: Path) -> list[dict[str, Any]]:
     """Load trainer log history from the run root or latest checkpoint fallback."""
     trainer_state = _trainer_state_payload(run_dir)
     log_history = trainer_state.get("log_history", [])
-    return log_history if isinstance(log_history, list) else []
+    raw_history = log_history if isinstance(log_history, list) else []
+    authoritative_eval_history = _load_authoritative_eval_history(run_dir)
+    return _merge_authoritative_eval_history(
+        log_history=raw_history,
+        authoritative_eval_history=authoritative_eval_history,
+    )
 
 
 def _render_training_curves_png(
@@ -470,9 +526,13 @@ def write_training_history_from_log_history(
     """Write CSV, SVG, and summary artifacts from one in-memory trainer log history."""
     if not log_history:
         return {}
+    merged_log_history = _merge_authoritative_eval_history(
+        log_history=log_history,
+        authoritative_eval_history=_load_authoritative_eval_history(run_dir),
+    )
     timing_records = _read_jsonl(eval_dir / "training_timing.jsonl")
     rows, train_loss_points, eval_loss_points, eval_cer_points, eval_wer_points = _history_rows(
-        log_history,
+        merged_log_history,
         timing_records=timing_records,
     )
     eval_dir.mkdir(parents=True, exist_ok=True)
@@ -499,7 +559,7 @@ def write_training_history_from_log_history(
         writer.writeheader()
         writer.writerows(rows)
 
-    summary = _round_artifact_value(_load_training_summary(run_dir, log_history))
+    summary = _round_artifact_value(_load_training_summary(run_dir, merged_log_history))
     cer_markers, wer_markers = _summary_markers(run_dir)
     svg_path = eval_dir / "training_curves.svg"
     if include_visuals:
@@ -576,7 +636,7 @@ def write_training_history_from_log_history(
     )
     jsonl_path = eval_dir / "training_history.jsonl"
     with jsonl_path.open("w", encoding="utf-8") as handle:
-        for item in _round_artifact_value(log_history):
+        for item in _round_artifact_value(merged_log_history):
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
     artifacts = {
         "training_history_csv": csv_path,

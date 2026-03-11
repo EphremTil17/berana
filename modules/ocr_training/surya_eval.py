@@ -62,38 +62,50 @@ def _shard_rows_for_rank(
     return [row for index, row in enumerate(rows) if index % world_size == rank]
 
 
-def evaluate_surya_checkpoint(
+class _InMemoryFoundationPredictor:
+    """Minimal FoundationPredictor-compatible wrapper around an in-memory training model."""
+
+    def __init__(self, *, runtime, model, processor):
+        self.model = model
+        self.processor = processor
+        self.tasks = runtime["FoundationPredictor"].tasks
+        self._disable_tqdm = False
+
+    @property
+    def disable_tqdm(self) -> bool:
+        return self._disable_tqdm
+
+    @disable_tqdm.setter
+    def disable_tqdm(self, value: bool) -> None:
+        self._disable_tqdm = bool(value)
+
+
+def build_in_memory_eval_predictor(*, runtime, model, processor):
+    """Build a RecognitionPredictor around the current in-memory training model."""
+    foundation_predictor = _InMemoryFoundationPredictor(
+        runtime=runtime,
+        model=model,
+        processor=processor,
+    )
+    predictor = runtime["RecognitionPredictor"](foundation_predictor)
+    predictor.disable_tqdm = True
+    return predictor
+
+
+def _predict_surya_records(
     *,
-    run_key: str,
-    run_dir: Path,
-    dataset_dir: Path,
+    rows: list[dict[str, str]],
     split: str,
-    eval_fraction: float,
-    max_rows: int | None,
     eval_batch_size: int,
-    seed: int,
-    modality: str | None = None,
+    predictor,
     runtime,
-    load_surya_eval_predictor,
     distributed_context=None,
     torch_module=None,
-    output_dir: Path | None = None,
-) -> dict[str, Any]:
-    """Evaluate Surya OCR predictions against target split labels."""
-    rows = load_split_rows(dataset_dir, split)
-    if modality is not None:
-        normalized_modality = modality.strip().lower()
-        rows = [row for row in rows if infer_row_modality(row) == normalized_modality]
-    if eval_fraction < 1.0:
-        rows = subset_rows(rows, fraction=eval_fraction, seed=seed)
-    if max_rows is not None and len(rows) > max_rows:
-        rows = deterministic_sample_rows(rows, max_rows=max_rows, seed=seed)
+) -> tuple[list[dict[str, Any]], int]:
+    """Run OCR inference for one deterministic row list and return gathered prediction records."""
     rank = int(getattr(distributed_context, "rank", 0) if distributed_context else 0)
     world_size = int(getattr(distributed_context, "world_size", 1) if distributed_context else 1)
     local_rows = _shard_rows_for_rank(rows, rank=rank, world_size=world_size)
-    foundation_predictor = load_surya_eval_predictor(runtime, run_dir)
-    predictor = runtime["RecognitionPredictor"](foundation_predictor)
-    predictor.disable_tqdm = True
 
     records = []
     for row_batch in tqdm(
@@ -140,23 +152,43 @@ def evaluate_surya_checkpoint(
         ] * distributed_context.world_size
         torch_module.distributed.all_gather_object(gathered_records, records)
         if not distributed_context.is_rank_zero:
-            return {
-                "status": "completed_nonzero_rank",
-                "rank": distributed_context.rank,
-                "num_rows": len(records),
-            }
+            return [], world_size
         records = [record for chunk in gathered_records if chunk for record in chunk]
+    return records, world_size
 
+
+def _write_surya_eval_outputs(
+    *,
+    run_key: str | None,
+    run_dir: Path,
+    eval_dir: Path,
+    split: str,
+    modality: str | None,
+    eval_fraction: float,
+    max_rows: int | None,
+    eval_batch_size: int,
+    seed: int,
+    records: list[dict[str, Any]],
+    world_size: int,
+    register_stage: bool,
+    include_predictions: bool,
+    include_confusions: bool,
+    include_report_bundle: bool,
+) -> dict[str, Any]:
+    """Persist evaluation artifacts for either explicit tool runs or training checkpoint evals."""
     mean_cer = float(mean(r["cer"] for r in records)) if records else 1.0
     mean_wer = float(mean(r["wer"] for r in records)) if records else 1.0
     exact_rate = float(mean(1.0 if r["exact"] else 0.0 for r in records)) if records else 0.0
-    eval_dir = output_dir or (run_dir / "tool_evaluation")
     eval_dir.mkdir(parents=True, exist_ok=True)
     suffix = f"{split}_{modality}" if modality else split
-    predictions_path = eval_dir / f"predictions_{suffix}.jsonl"
-    with predictions_path.open("w", encoding="utf-8") as handle:
-        for record in records:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    predictions_path: Path | None = None
+    if include_predictions:
+        predictions_path = eval_dir / f"predictions_{suffix}.jsonl"
+        with predictions_path.open("w", encoding="utf-8") as handle:
+            for record in records:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     summary_path = eval_dir / f"summary_{suffix}.json"
     summary_payload = {
         "split": split,
@@ -174,67 +206,191 @@ def evaluate_surya_checkpoint(
     summary_path.write_text(
         json.dumps(summary_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    report_path = eval_dir / f"report_{suffix}.md"
-    report_path.write_text(
-        "\n".join(
-            [
-                "# Surya Evaluation Report",
-                "",
-                f"- Split: `{split}`",
-                f"- Modality: `{modality or 'all'}`",
-                f"- Rows: `{len(records)}`",
-                f"- Eval Fraction: `{eval_fraction:.4f}`",
-                f"- Eval Batch Size: `{eval_batch_size}`",
-                f"- Max Rows: `{max_rows}`",
-                f"- Seed: `{seed}`",
-                f"- Mean CER: `{mean_cer:.4f}`",
-                f"- Mean WER: `{mean_wer:.4f}`",
-                f"- Exact Match: `{exact_rate:.4f}`",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    report_artifacts = {}
-    report_artifacts.update(
-        write_confusion_artifacts(eval_dir=eval_dir, split=suffix, records=records)
-    )
-    report_artifacts.update(
-        write_training_report_bundle(
-            run_dir=run_dir,
-            output_dir=eval_dir,
-            split=suffix,
-            predictions_path=predictions_path,
-            include_training_artifacts=False,
+
+    report_path: Path | None = None
+    if include_report_bundle:
+        report_path = eval_dir / f"report_{suffix}.md"
+        report_path.write_text(
+            "\n".join(
+                [
+                    "# Surya Evaluation Report",
+                    "",
+                    f"- Split: `{split}`",
+                    f"- Modality: `{modality or 'all'}`",
+                    f"- Rows: `{len(records)}`",
+                    f"- Eval Fraction: `{eval_fraction:.4f}`",
+                    f"- Eval Batch Size: `{eval_batch_size}`",
+                    f"- Max Rows: `{max_rows}`",
+                    f"- Seed: `{seed}`",
+                    f"- Mean CER: `{mean_cer:.4f}`",
+                    f"- Mean WER: `{mean_wer:.4f}`",
+                    f"- Exact Match: `{exact_rate:.4f}`",
+                ]
+            ),
+            encoding="utf-8",
         )
+
+    report_artifacts = {}
+    if include_confusions:
+        report_artifacts.update(
+            write_confusion_artifacts(eval_dir=eval_dir, split=suffix, records=records)
+        )
+    if include_report_bundle:
+        report_artifacts.update(
+            write_training_report_bundle(
+                run_dir=run_dir,
+                output_dir=eval_dir,
+                split=suffix,
+                predictions_path=predictions_path,
+                include_training_artifacts=False,
+            )
+        )
+
+    if register_stage and run_key is not None:
+        register_training_stage(
+            stage=STAGE_SURYA_EVALUATE,
+            run_key=run_key,
+            run_dir=run_dir,
+            artifacts={
+                "summary": relative_to_base(summary_path),
+                **(
+                    {"predictions": relative_to_base(predictions_path)}
+                    if predictions_path is not None
+                    else {}
+                ),
+                **({"report": relative_to_base(report_path)} if report_path is not None else {}),
+                **{
+                    artifact_name: relative_to_base(artifact_path)
+                    for artifact_name, artifact_path in report_artifacts.items()
+                },
+            },
+            metadata={
+                "status": "completed",
+                "split": split,
+                "num_rows": len(records),
+                "world_size": world_size,
+                "eval_fraction": eval_fraction,
+                "eval_batch_size": eval_batch_size,
+                "max_rows": max_rows,
+                "seed": seed,
+                "mean_cer": mean_cer,
+                "mean_wer": mean_wer,
+                "exact_rate": exact_rate,
+            },
+        )
+    return summary_payload
+
+
+def evaluate_surya_rows(
+    *,
+    run_key: str | None,
+    run_dir: Path,
+    rows: list[dict[str, str]],
+    split: str,
+    eval_fraction: float,
+    max_rows: int | None,
+    eval_batch_size: int,
+    seed: int,
+    modality: str | None,
+    predictor,
+    runtime,
+    distributed_context=None,
+    torch_module=None,
+    output_dir: Path | None = None,
+    register_stage: bool = True,
+    include_predictions: bool = True,
+    include_confusions: bool = True,
+    include_report_bundle: bool = True,
+) -> dict[str, Any]:
+    """Evaluate one prepared row list with a ready RecognitionPredictor-compatible object."""
+    records, world_size = _predict_surya_records(
+        rows=rows,
+        split=split,
+        eval_batch_size=eval_batch_size,
+        predictor=predictor,
+        runtime=runtime,
+        distributed_context=distributed_context,
+        torch_module=torch_module,
     )
-    register_training_stage(
-        stage=STAGE_SURYA_EVALUATE,
+    if (
+        distributed_context
+        and distributed_context.is_distributed
+        and not distributed_context.is_rank_zero
+    ):
+        return {
+            "status": "completed_nonzero_rank",
+            "rank": distributed_context.rank,
+            "num_rows": len(records),
+        }
+    eval_dir = output_dir or (run_dir / "tool_evaluation")
+    return _write_surya_eval_outputs(
         run_key=run_key,
         run_dir=run_dir,
-        artifacts={
-            "summary": relative_to_base(summary_path),
-            "predictions": relative_to_base(predictions_path),
-            "report": relative_to_base(report_path),
-            **{
-                artifact_name: relative_to_base(artifact_path)
-                for artifact_name, artifact_path in report_artifacts.items()
-            },
-        },
-        metadata={
-            "status": "completed",
-            "split": split,
-            "num_rows": len(records),
-            "world_size": world_size,
-            "eval_fraction": eval_fraction,
-            "eval_batch_size": eval_batch_size,
-            "max_rows": max_rows,
-            "seed": seed,
-            "mean_cer": mean_cer,
-            "mean_wer": mean_wer,
-            "exact_rate": exact_rate,
-        },
+        eval_dir=eval_dir,
+        split=split,
+        modality=modality,
+        eval_fraction=eval_fraction,
+        max_rows=max_rows,
+        eval_batch_size=eval_batch_size,
+        seed=seed,
+        records=records,
+        world_size=world_size,
+        register_stage=register_stage,
+        include_predictions=include_predictions,
+        include_confusions=include_confusions,
+        include_report_bundle=include_report_bundle,
     )
-    return summary_payload
+
+
+def evaluate_surya_checkpoint(
+    *,
+    run_key: str,
+    run_dir: Path,
+    dataset_dir: Path,
+    split: str,
+    eval_fraction: float,
+    max_rows: int | None,
+    eval_batch_size: int,
+    seed: int,
+    modality: str | None = None,
+    runtime,
+    load_surya_eval_predictor,
+    distributed_context=None,
+    torch_module=None,
+    output_dir: Path | None = None,
+) -> dict[str, Any]:
+    """Evaluate Surya OCR predictions against target split labels."""
+    rows = load_split_rows(dataset_dir, split)
+    if modality is not None:
+        normalized_modality = modality.strip().lower()
+        rows = [row for row in rows if infer_row_modality(row) == normalized_modality]
+    if eval_fraction < 1.0:
+        rows = subset_rows(rows, fraction=eval_fraction, seed=seed)
+    if max_rows is not None and len(rows) > max_rows:
+        rows = deterministic_sample_rows(rows, max_rows=max_rows, seed=seed)
+    foundation_predictor = load_surya_eval_predictor(runtime, run_dir)
+    predictor = runtime["RecognitionPredictor"](foundation_predictor)
+    predictor.disable_tqdm = True
+    return evaluate_surya_rows(
+        run_key=run_key,
+        run_dir=run_dir,
+        rows=rows,
+        split=split,
+        eval_fraction=eval_fraction,
+        max_rows=max_rows,
+        eval_batch_size=eval_batch_size,
+        seed=seed,
+        modality=modality,
+        predictor=predictor,
+        runtime=runtime,
+        distributed_context=distributed_context,
+        torch_module=torch_module,
+        output_dir=output_dir,
+        register_stage=True,
+        include_predictions=True,
+        include_confusions=True,
+        include_report_bundle=True,
+    )
 
 
 def evaluate_surya_modalities(

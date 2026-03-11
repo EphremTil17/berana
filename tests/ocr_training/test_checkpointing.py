@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from modules.ocr_training.checkpointing import (
+    AuthoritativeCheckpointEvalCallback,
     BestCerCheckpointCallback,
     BestWerCheckpointCallback,
     PlateauWarningCallback,
@@ -244,3 +245,49 @@ def test_plateau_warning_callback_warns_on_sustained_regression(monkeypatch, tmp
 
     assert warnings
     assert "current CER gap" in warnings[0]
+
+
+def test_authoritative_checkpoint_eval_callback_updates_best_and_history(tmp_path: Path):
+    out = tmp_path / "run"
+    out.mkdir(parents=True)
+    checkpoint = out / "checkpoint-200"
+    checkpoint.mkdir()
+    (checkpoint / "trainer_state.json").write_text("{}", encoding="utf-8")
+    callback = AuthoritativeCheckpointEvalCallback(
+        out,
+        eval_runner=lambda checkpoint_path, state: {
+            "split": "val",
+            "num_rows": 1000,
+            "world_size": 1,
+            "eval_fraction": 1.0,
+            "eval_batch_size": 4,
+            "max_rows": 1000,
+            "seed": 42,
+            "mean_cer": 0.031,
+            "mean_wer": 0.072,
+            "exact_rate": 0.75,
+        },
+        distributed_context=type(
+            "Context",
+            (),
+            {
+                "is_distributed": False,
+                "is_rank_zero": True,
+                "local_rank": 0,
+            },
+        )(),
+        torch_module=type("Torch", (), {})(),
+        plateau_callback=None,
+    )
+    args = type("Args", (), {"output_dir": str(out)})()
+    state = type("State", (), {"global_step": 200, "log_history": []})()
+    control = object()
+
+    callback.on_save(args, state, control)
+
+    history_path = out / "evaluation" / "checkpoint_eval_history.jsonl"
+    assert history_path.exists()
+    history_text = history_path.read_text(encoding="utf-8")
+    assert '"eval_cer": 0.031' in history_text
+    assert (out / "best_model_meta.json").exists()
+    assert (out / "best_wer_model_meta.json").exists()
