@@ -174,6 +174,7 @@ def export_images_for_labeling(
     Converts PDF pages to images and saves them to the mapped Docker volume.
     User will connect them via Label Studio's 'Cloud Storage -> Local Files' UI.
     """
+    from pdf2image.exceptions import PDFInfoNotInstalledError
     from pdf2image.pdf2image import pdfinfo_from_path
     from tqdm import tqdm
 
@@ -195,7 +196,18 @@ def export_images_for_labeling(
     else:
         logger.info(f"Exporting {num_pages} pages to {ls_img_dir} for Label Studio...")
 
-    info = pdfinfo_from_path(str(pdf_path))
+    try:
+        info = pdfinfo_from_path(str(pdf_path))
+    except PDFInfoNotInstalledError as exc:
+        raise RuntimeError(
+            "layout-prep requires Poppler's `pdfinfo`, but it is not installed or not on PATH. "
+            "Install `poppler-utils` and retry, e.g. `sudo apt-get install -y poppler-utils`."
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to read PDF metadata for {pdf_path}. Ensure the PDF is valid and "
+            "that Poppler (`pdfinfo`) is installed."
+        ) from exc
     total_pages = int(info["Pages"])
     planned_total = min(total_pages, num_pages) if num_pages is not None else total_pages
 

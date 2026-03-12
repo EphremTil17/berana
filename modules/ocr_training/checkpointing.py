@@ -628,6 +628,8 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
         eval_runner,
         distributed_context,
         torch_module,
+        signal_state: TrainingSignalState | None = None,
+        termination_coordinator: TrainingTerminationCoordinator | None = None,
         plateau_callback: PlateauWarningCallback | None = None,
     ):
         """Bind checkpoint-eval orchestration to one training run."""
@@ -635,6 +637,8 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
         self.eval_runner = eval_runner
         self.distributed_context = distributed_context
         self.torch_module = torch_module
+        self.signal_state = signal_state
+        self.termination_coordinator = termination_coordinator
         self.plateau_callback = plateau_callback
         history = load_checkpoint_eval_history(output_dir)
         self._best_cer = min(
@@ -648,6 +652,14 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
         self._last_completed_step = max(
             (int(item["step"]) for item in history if item.get("step") is not None),
             default=-1,
+        )
+
+    def _sync_stop(self) -> None:
+        if self.signal_state is None:
+            return
+        observe_training_stop(
+            self.signal_state,
+            coordinator=self.termination_coordinator,
         )
 
     def _sync_ranks(self) -> None:
@@ -686,6 +698,21 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
             "eval_wer": summary.get("mean_wer"),
             "eval_exact": summary.get("exact_rate"),
         }
+        log_payload = {
+            "eval_cer": result_payload["eval_cer"],
+            "eval_wer": result_payload["eval_wer"],
+            "eval_exact": result_payload["eval_exact"],
+            "checkpoint_step": checkpoint_step,
+            "eval_num_rows": summary.get("num_rows"),
+        }
+        if not hasattr(state, "log_history") or state.log_history is None:
+            state.log_history = []
+        state.log_history.append(
+            {
+                "step": checkpoint_step,
+                **log_payload,
+            }
+        )
         append_checkpoint_eval_result(self.output_dir, result_payload)
 
         current_cer = float(summary["mean_cer"])
@@ -723,10 +750,16 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
                 train_losses=train_losses,
             )
         self._last_completed_step = checkpoint_step
+        if self.distributed_context.is_rank_zero:
+            logger.info("%s", _round_artifact_value(log_payload))
 
     def on_save(self, args, state, control, **kwargs):
         """Run authoritative OCR evaluation after each saved checkpoint."""
         del kwargs
+        self._sync_stop()
+        if self.signal_state is not None and self.signal_state.stop_requested:
+            control.should_training_stop = True
+            return control
         checkpoint_path = resolve_latest_checkpoint(Path(args.output_dir))
         if checkpoint_path is None:
             return control
@@ -755,6 +788,7 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
             return control
         finally:
             self._sync_ranks()
+            self._sync_stop()
 
         if summary.get("status") != "completed_nonzero_rank":
             self._record_success(
@@ -763,6 +797,8 @@ class AuthoritativeCheckpointEvalCallback(_TrainerCallback):
                 summary=summary,
                 state=state,
             )
+        if self.signal_state is not None and self.signal_state.stop_requested:
+            control.should_training_stop = True
         return control
 
 

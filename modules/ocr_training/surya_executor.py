@@ -31,6 +31,7 @@ from modules.ocr_training.schemas import (
 from modules.ocr_training.surya_artifacts import (
     candidate_output_dir,
     cleanup_candidate_scratch,
+    load_finetune_meta,
     register_completed_finetune,
     register_interrupted_finetune,
     write_finetune_meta,
@@ -38,9 +39,9 @@ from modules.ocr_training.surya_artifacts import (
 from modules.ocr_training.surya_common import resolve_resume_checkpoint
 from modules.ocr_training.surya_data import LocalSuryaOCRDataset, SuryaOCRDataCollator
 from modules.ocr_training.surya_eval import (
-    build_in_memory_eval_predictor,
     evaluate_surya_rows,
 )
+from modules.ocr_training.surya_model import load_surya_eval_predictor
 from modules.ocr_training.surya_patches import (
     build_eval_cleanup_callback,
     build_eval_interrupt_discard_callback,
@@ -213,6 +214,8 @@ def _attach_training_callbacks(
                 eval_runner=authoritative_eval_runner,
                 distributed_context=distributed_context,
                 torch_module=torch,
+                signal_state=signal_state,
+                termination_coordinator=termination_coordinator,
                 plateau_callback=plateau_callback,
             )
         )
@@ -520,20 +523,19 @@ def run_training_candidate(  # noqa: C901
         *,
         checkpoint_path: Path,
         state,
-        _trainer=trainer,
-        _processor=processor,
         _training_args=training_args,
     ):
-        del checkpoint_path
-        base_model = getattr(_trainer.model, "module", _trainer.model)
-        was_training = bool(getattr(base_model, "training", False))
-        base_model.eval()
+        foundation_predictor = None
+        predictor = None
         try:
-            predictor = build_in_memory_eval_predictor(
+            foundation_predictor = load_surya_eval_predictor(
                 runtime=runtime,
-                model=base_model,
-                processor=_processor,
+                run_dir=output_dir,
+                load_finetune_meta=load_finetune_meta,
+                checkpoint_path=checkpoint_path,
             )
+            predictor = runtime["RecognitionPredictor"](foundation_predictor)
+            predictor.disable_tqdm = True
             checkpoint_eval_dir = (
                 output_dir
                 / "evaluation"
@@ -562,8 +564,12 @@ def run_training_candidate(  # noqa: C901
                 include_report_bundle=False,
             )
         finally:
-            if was_training:
-                base_model.train()
+            del predictor
+            del foundation_predictor
+            gc.collect()
+            if torch.cuda.is_available():
+                with suppress(Exception):
+                    torch.cuda.empty_cache()
 
     _attach_training_callbacks(
         trainer=trainer,

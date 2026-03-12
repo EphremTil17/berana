@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -62,31 +63,33 @@ def _shard_rows_for_rank(
     return [row for index, row in enumerate(rows) if index % world_size == rank]
 
 
-class _InMemoryFoundationPredictor:
-    """Minimal FoundationPredictor-compatible wrapper around an in-memory training model."""
-
-    def __init__(self, *, runtime, model, processor):
-        self.model = model
-        self.processor = processor
-        self.tasks = runtime["FoundationPredictor"].tasks
-        self._disable_tqdm = False
-
-    @property
-    def disable_tqdm(self) -> bool:
-        return self._disable_tqdm
-
-    @disable_tqdm.setter
-    def disable_tqdm(self, value: bool) -> None:
-        self._disable_tqdm = bool(value)
-
-
 def build_in_memory_eval_predictor(*, runtime, model, processor):
     """Build a RecognitionPredictor around the current in-memory training model."""
-    foundation_predictor = _InMemoryFoundationPredictor(
-        runtime=runtime,
-        model=model,
-        processor=processor,
+    torch = runtime["torch"]
+    foundation_cls = runtime["FoundationPredictor"]
+    foundation_predictor = foundation_cls.__new__(foundation_cls)
+    foundation_predictor.model = model
+    foundation_predictor.processor = processor
+    foundation_predictor.prompt_queue = deque()
+    foundation_predictor.batch_prompt_mapping = None
+    foundation_predictor.kv_cache = None
+    foundation_predictor.beacon_token_interval = model.config.beacon_token_interval
+    foundation_predictor.device_pad_token = torch.tensor(
+        processor.pad_token_id,
+        device=model.device,
+        dtype=torch.long,
     )
+    foundation_predictor.device_beacon_token = torch.tensor(
+        processor.beacon_token_id,
+        device=model.device,
+        dtype=torch.long,
+    )
+    foundation_predictor.special_token_ids = torch.tensor(
+        [model.config.image_token_id, *model.config.register_token_ids],
+        device=model.device,
+    )
+    foundation_predictor.pad_to_multiple = None
+    foundation_predictor._disable_tqdm = False
     predictor = runtime["RecognitionPredictor"](foundation_predictor)
     predictor.disable_tqdm = True
     return predictor

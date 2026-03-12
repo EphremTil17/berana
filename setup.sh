@@ -37,6 +37,52 @@ WARNING='\033[0;33m'
 ERROR='\033[0;31m'
 RESET='\033[0m'
 
+have_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+can_use_sudo() {
+    if [ "$(id -u)" -eq 0 ]; then
+        return 0
+    fi
+    if have_command sudo; then
+        sudo -n true >/dev/null 2>&1
+        return $?
+    fi
+    return 1
+}
+
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+ensure_apt_packages() {
+    if ! have_command apt-get; then
+        echo -e "${ERROR}Required system packages are missing and apt-get is unavailable on this host.${RESET}"
+        echo -e "${ERROR}Install these packages manually before rerunning setup:${RESET}"
+        echo -e "${ERROR}  build-essential g++ gcc cmake pkg-config python3-dev poppler-utils${RESET}"
+        exit 1
+    fi
+    echo -e "${BLUE}Installing required system packages for OCR training...${RESET}"
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get update && apt-get install -y build-essential g++ gcc cmake pkg-config python3-dev poppler-utils
+        return
+    fi
+    if have_command sudo; then
+        if sudo apt-get update && sudo apt-get install -y build-essential g++ gcc cmake pkg-config python3-dev poppler-utils; then
+            return
+        fi
+    fi
+    echo -e "${ERROR}Failed to install required system packages automatically.${RESET}"
+    echo -e "${ERROR}Rerun setup.sh with administrative privileges, or run this manually first:${RESET}"
+    echo -e "${ERROR}  sudo apt-get update && sudo apt-get install -y build-essential g++ gcc cmake pkg-config python3-dev poppler-utils${RESET}"
+    exit 1
+}
+
 echo -e "${BLUE}============================================================${RESET}"
 echo -e "${BLUE} Berana-Trans: Liturgical Ge'ez Pipeline Setup ${RESET}"
 echo -e "${BLUE}============================================================${RESET}"
@@ -44,15 +90,23 @@ echo -e "Project Root: $PROJECT_ROOT"
 
 # 0. System Dependencies Check
 echo -e "${BLUE}[0/5] Verifying system dependencies...${RESET}"
-if ! command -v pdfinfo &> /dev/null; then
-    echo -e "${WARNING}Warning: poppler-utils not found. pdf2image requires it.${RESET}"
-    echo -e "${WARNING}Install with: sudo apt install -y poppler-utils${RESET}"
+if ! have_command pdfinfo || ! have_command g++ || ! have_command gcc || ! have_command cmake || ! have_command pkg-config; then
+    ensure_apt_packages
 fi
-
-if ! command -v nvcc &> /dev/null; then
+if ! have_command pdfinfo; then
+    echo -e "${ERROR}pdfinfo is still unavailable after package installation.${RESET}"
+    exit 1
+fi
+if ! have_command g++; then
+    echo -e "${ERROR}g++ is still unavailable after package installation.${RESET}"
+    exit 1
+fi
+if ! have_command nvcc; then
     echo -e "${WARNING}Warning: CUDA Compiler (nvcc) not found.${RESET}"
-    echo -e "${WARNING}For GPU acceleration, install CUDA 13.0 Toolkit:${RESET}"
-    echo -e "${WARNING}  sudo apt install -y cuda-toolkit-13-0${RESET}"
+    echo -e "${WARNING}CUDA toolkit installation is handled manually on this project.${RESET}"
+    echo -e "${WARNING}OCR training can still proceed if your runtime/driver stack is already working.${RESET}"
+    echo -e "${WARNING}If you need local GPU llama-cpp builds, install CUDA toolkit yourself first:${RESET}"
+    echo -e "${WARNING}  sudo apt-get install -y cuda-toolkit-13-0${RESET}"
 fi
 
 # 1. Environment Creation
@@ -84,18 +138,9 @@ PY_TAG="$("$VENV_PYTHON" -c 'import sys; print(f"cp{sys.version_info.major}{sys.
 WHEELHOUSE="$PROJECT_ROOT/.cache/wheels/llama-cpp-python/${LLAMA_VERSION}"
 mkdir -p "$WHEELHOUSE"
 
-if ! command -v nvcc &> /dev/null; then
-    echo -e "${WARNING}Warning: CUDA Compiler (nvcc) not found. Falling back to CPU-only.${RESET}"
-    CPU_WHEEL="$(find "$WHEELHOUSE" -maxdepth 1 -type f -name "llama_cpp_python-${LLAMA_VERSION}-${PY_TAG}-*.whl" | grep -v 'linux_x86_64_cuda' | head -n 1 || true)"
-    if [ -n "$CPU_WHEEL" ]; then
-        echo -e "${BLUE}Using cached CPU wheel: $(basename "$CPU_WHEEL")${RESET}"
-        "$VENV_PIP" install "$CPU_WHEEL"
-    else
-        echo -e "${BLUE}No cached CPU wheel found. Building and caching...${RESET}"
-        "$VENV_PIP" wheel "llama-cpp-python==${LLAMA_VERSION}" -w "$WHEELHOUSE"
-        CPU_WHEEL="$(find "$WHEELHOUSE" -maxdepth 1 -type f -name "llama_cpp_python-${LLAMA_VERSION}-${PY_TAG}-*.whl" | grep -v 'linux_x86_64_cuda' | head -n 1)"
-        "$VENV_PIP" install "$CPU_WHEEL"
-    fi
+if ! have_command nvcc; then
+    echo -e "${WARNING}[5/5] Skipping optional llama-cpp-python CUDA build because nvcc is unavailable.${RESET}"
+    echo -e "${WARNING}This does not block OCR training. Install CUDA toolkit later if you need local GPU llama-cpp inference.${RESET}"
 else
     echo -e "${SUCCESS}[5/5] Building/using cached llama-cpp-python wheel with CUDA...${RESET}"
     CUDA_WHEEL="$(find "$WHEELHOUSE" -maxdepth 1 -type f -name "llama_cpp_python-${LLAMA_VERSION}-${PY_TAG}-*-linux_x86_64.whl" | head -n 1 || true)"

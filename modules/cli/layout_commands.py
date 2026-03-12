@@ -50,6 +50,9 @@ def run_layout_prep(
     except PermissionError as exc:
         log.error(str(exc))
         raise typer.Exit(code=1) from exc
+    except RuntimeError as exc:
+        log.error(str(exc))
+        raise typer.Exit(code=1) from exc
 
     pointer = register_latest_run(
         stage="layout-prep",
