@@ -64,6 +64,39 @@ def _snapshot_path_from_extracted_root(extracted_root: Path) -> Path:
     return extracted_root.parent / "manifests" / "source_snapshots" / "fidel_sources.jsonl"
 
 
+def _safe_review_filename(sample_id: str, original_name: str) -> str:
+    safe_id = sample_id.replace(":", "__").replace("/", "_")
+    return f"{safe_id}__{Path(original_name).name}"
+
+
+def _suspect_review_sets(extracted_root: Path) -> tuple[set[str], set[str]]:
+    suspect_dir = extracted_root.parent / "suspect_blank_images"
+    review_manifest = extracted_root.parent / "blank_cleanup_review" / "suspect_rows.jsonl"
+    if not review_manifest.exists():
+        return set(), set()
+
+    remaining_names = (
+        {path.name for path in suspect_dir.iterdir() if path.is_file()}
+        if suspect_dir.exists()
+        else set()
+    )
+
+    all_suspect_ids: set[str] = set()
+    included_ids: set[str] = set()
+    for line in review_manifest.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        sample_id = str(row["sample_id"])
+        original_filename = str(row["original_filename"])
+        image_relpath = str(row.get("image_relpath") or "")
+        all_suspect_ids.add(sample_id)
+        review_name = _safe_review_filename(sample_id, original_filename)
+        if review_name in remaining_names or Path(image_relpath).name in remaining_names:
+            included_ids.add(sample_id)
+    return all_suspect_ids, included_ids
+
+
 def build_surya_dataset(
     *,
     extracted_root: Path,
@@ -73,6 +106,7 @@ def build_surya_dataset(
     extra_manifest: Path | None = None,
     extra_images_root: Path | None = None,
     extra_weight: float = 0.30,
+    include_suspect: bool = False,
 ) -> Path:
     """Build deterministic local Surya-compatible dataset with train/val/holdout splits."""
     snapshot_path = _snapshot_path_from_extracted_root(extracted_root)
@@ -88,7 +122,20 @@ def build_surya_dataset(
         )
 
     rows = _load_source_snapshot(snapshot_path)
-    included_rows = [row for row in rows if not row.excluded and row.image_relpath]
+    all_suspect_ids, suspect_inclusion_ids = _suspect_review_sets(extracted_root)
+    included_rows = [
+        row
+        for row in rows
+        if not row.excluded
+        and row.image_relpath
+        and (
+            (not include_suspect and row.sample_id not in all_suspect_ids)
+            or (
+                include_suspect
+                and (row.sample_id not in all_suspect_ids or row.sample_id in suspect_inclusion_ids)
+            )
+        )
+    ]
     if not included_rows:
         raise ValueError("No included rows available to build Surya dataset.")
 
@@ -187,6 +234,9 @@ def build_surya_dataset(
                 },
                 "strict_page_isolation": split_config.strict_page_isolation,
                 "counts": split_counts,
+                "suspect_review_rows": len(all_suspect_ids),
+                "suspect_included_rows": len(suspect_inclusion_ids) if include_suspect else 0,
+                "include_suspect": include_suspect,
                 "extra_manifest": str(extra_manifest) if extra_manifest else None,
                 "extra_images_root": str(extra_images_root) if extra_images_root else None,
                 "extra_weight": extra_weight,
@@ -205,6 +255,9 @@ def build_surya_dataset(
                 "split_config": split_config.model_dump(mode="json"),
                 "source_snapshot": _relative_to_base(snapshot_path),
                 "link_mode_counts": link_mode_counts,
+                "suspect_review_rows": len(all_suspect_ids),
+                "suspect_included_rows": len(suspect_inclusion_ids) if include_suspect else 0,
+                "include_suspect": include_suspect,
             },
             ensure_ascii=False,
             indent=2,
@@ -229,6 +282,9 @@ def build_surya_dataset(
             "dataset_hash": dataset_hash,
             "counts": split_counts,
             "link_mode_counts": link_mode_counts,
+            "suspect_review_rows": len(all_suspect_ids),
+            "suspect_included_rows": len(suspect_inclusion_ids) if include_suspect else 0,
+            "include_suspect": include_suspect,
         },
     )
 

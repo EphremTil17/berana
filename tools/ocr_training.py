@@ -14,9 +14,12 @@ import typer
 
 from modules.ocr_training.adapters.berana_gold import validate_berana_gold_inputs
 from modules.ocr_training.distributed.context import torchrun_is_active
+from modules.ocr_training.fidel_cleanup import cleanup_fidel_extracted
 from modules.ocr_training.fidel_extract import extract_fidel
 from modules.ocr_training.schemas import SplitConfig, SuryaTrainConfig, TrainMode
+from modules.ocr_training.surya_cleanup import verify_surya_dataset
 from modules.ocr_training.surya_dataset import build_surya_dataset
+from modules.ocr_training.surya_debug import extract_exact_false_debug_bundle
 from modules.ocr_training.surya_inspect import inspect_surya_dataset
 from modules.ocr_training.surya_reports import monitor_training_run, write_training_report_bundle
 from modules.ocr_training.surya_train import (
@@ -344,6 +347,17 @@ def cli_build_surya_dataset(
         float,
         typer.Option("--extra-weight", help="Optional Berana gold mix weight (scaffolded)."),
     ] = 0.30,
+    include_suspect: Annotated[
+        bool,
+        typer.Option(
+            "--include-suspect/--exclude-suspect",
+            help=(
+                "When building from a cleaned extracted root, include only suspect rows whose "
+                "review copies still remain in suspect_blank_images/. By default, both confirmed "
+                "blank rows and all suspect review rows are excluded."
+            ),
+        ),
+    ] = False,
 ):
     """Build deterministic Surya-compatible local dataset artifacts."""
     split_config = SplitConfig(
@@ -368,12 +382,50 @@ def cli_build_surya_dataset(
             extra_manifest=extra_manifest,
             extra_images_root=extra_images_root,
             extra_weight=extra_weight,
+            include_suspect=include_suspect,
         )
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         log.error("build-surya-dataset failed: %s", exc)
         raise typer.Exit(code=1) from exc
 
     log.info("build-surya-dataset complete run_dir=%s", run_dir)
+
+
+@app.command("cleanup-fidel")
+def cli_cleanup_fidel(
+    extracted_root: Annotated[
+        Path,
+        typer.Option("--extracted-root", help="Extracted data root path to sanitize."),
+    ] = Path("input/ocr_training/fidel/extracted"),
+    output_root: Annotated[
+        Path,
+        typer.Option(
+            "--output-root",
+            help="Output root for the cleaned extracted dataset copy.",
+        ),
+    ] = Path("input/ocr_training/fidel_cleaned"),
+    workers: Annotated[
+        int,
+        typer.Option("--workers", help="Bounded worker count for image audit during cleanup."),
+    ] = 8,
+):
+    """Create one cleaned extracted-root copy and filtered source snapshot before dataset build."""
+    try:
+        summary = cleanup_fidel_extracted(
+            extracted_root=extracted_root,
+            output_root=output_root,
+            workers=workers,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        log.error("cleanup-fidel failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    log.info(
+        "cleanup-fidel complete excluded=%d suspect=%d cleaned_extracted_root=%s",
+        summary["excluded_rows"],
+        summary["suspect_rows"],
+        summary["cleaned_extracted_root"],
+    )
 
 
 @app.command("train-surya")
@@ -841,6 +893,70 @@ def cli_evaluate_surya_modalities(
         "evaluate-surya-modalities complete split=%s modalities=%s",
         split,
         ",".join(sorted(summary["modalities"])),
+    )
+
+
+@app.command("debug-surya-predictions")
+def cli_debug_surya_predictions(
+    predictions_path: Annotated[
+        Path,
+        typer.Option("--predictions-path", help="Path to one predictions_<split>.jsonl artifact."),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Optional output directory for debug artifacts. Defaults to a sibling directory beside the predictions file.",
+        ),
+    ] = None,
+):
+    """Extract exact-false rows, copy their images, and run a robust blank-image audit."""
+    resolved_output_dir = output_dir or predictions_path.parent / f"{predictions_path.stem}_debug"
+    try:
+        summary = extract_exact_false_debug_bundle(
+            predictions_path=predictions_path,
+            output_dir=resolved_output_dir,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        log.error("debug-surya-predictions failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    log.info(
+        "debug-surya-predictions complete exact_false=%d confirmed_blank=%d suspect_blank=%d overlap=%s output_dir=%s",
+        summary["exact_false"]["num_rows"],
+        summary["confirmed_blank"]["num_rows"],
+        summary["suspect_blank"]["num_rows"],
+        json.dumps(summary["exact_false"]["signal_overlap"], ensure_ascii=False, sort_keys=True),
+        resolved_output_dir,
+    )
+
+
+@app.command("verify-surya-dataset")
+def cli_verify_surya_dataset(
+    dataset_dir: Annotated[
+        Path,
+        typer.Option("--dataset-dir", help="Path to one built hf_dataset directory to verify."),
+    ],
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Output directory for verification review artifacts."),
+    ],
+):
+    """Verify one built Surya dataset for remaining blank-image contradictions."""
+    try:
+        summary = verify_surya_dataset(
+            dataset_dir=dataset_dir,
+            output_dir=output_dir,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+        log.error("verify-surya-dataset failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    log.info(
+        "verify-surya-dataset complete confirmed=%d suspect=%d output_dir=%s",
+        summary["confirmed_blank_rows"],
+        summary["suspect_blank_rows"],
+        output_dir,
     )
 
 

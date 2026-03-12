@@ -1,5 +1,6 @@
 import csv
 import json
+import os
 import shutil
 import tempfile
 import zipfile
@@ -8,6 +9,7 @@ from pathlib import Path
 from PIL import Image
 
 from config.settings import settings
+from modules.ocr_training.fidel_cleanup import cleanup_fidel_extracted
 from modules.ocr_training.fidel_extract import extract_fidel
 from modules.ocr_training.schemas import SplitConfig
 from modules.ocr_training.surya_dataset import build_surya_dataset
@@ -16,6 +18,21 @@ from modules.ocr_training.surya_dataset import build_surya_dataset
 def _write_png(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGB", (16, 8), color=(255, 255, 255))
+    image.save(path)
+
+
+def _write_blank_image(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("L", (64, 24), color=255).save(path)
+
+
+def _write_text_like_image(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image = Image.new("L", (128, 32), color=255)
+    for x0 in range(8, 120, 20):
+        for x in range(x0, x0 + 8):
+            for y in range(8, 22):
+                image.putpixel((x, y), 0)
     image.save(path)
 
 
@@ -208,5 +225,269 @@ def test_build_surya_dataset_creates_train_val_holdout_jsonl():
             total += len(lines)
         assert total == 5
 
+    finally:
+        shutil.rmtree(base)
+
+
+def test_build_surya_dataset_excludes_suspects_by_default():
+    base = Path(tempfile.mkdtemp(prefix="ocr_training_test_", dir=settings.BASE_DIR))
+    try:
+        extracted_root = base / "input" / "ocr_training" / "fidel" / "extracted"
+        manifests_root = (
+            base / "input" / "ocr_training" / "fidel" / "manifests" / "source_snapshots"
+        )
+        output_root = base / "output" / "ocr_training_datasets"
+        typed_img = extracted_root / "typed" / "good.png"
+        suspect_img = extracted_root / "synthetic" / "suspect.png"
+        _write_text_like_image(typed_img)
+        _write_blank_image(suspect_img)
+        manifests_root.mkdir(parents=True, exist_ok=True)
+        (manifests_root / "fidel_sources.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "sample_id": "good",
+                            "source_repo": "fidel_dataset",
+                            "source_split": "train",
+                            "original_filename": "good.png",
+                            "normalized_type": "typed",
+                            "text_raw": "good",
+                            "text_normalized": "good",
+                            "image_relpath": os.path.relpath(typed_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "sample_id": "suspect",
+                            "source_repo": "fidel_synthetic",
+                            "source_split": "synthetic",
+                            "original_filename": "suspect.png",
+                            "normalized_type": "synthetic",
+                            "text_raw": "suspect",
+                            "text_normalized": "suspect",
+                            "image_relpath": os.path.relpath(suspect_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        cleaned_root = base / "input" / "ocr_training" / "fidel_cleaned"
+        cleanup_fidel_extracted(
+            extracted_root=extracted_root,
+            output_root=cleaned_root,
+            workers=1,
+        )
+
+        run_dir = build_surya_dataset(
+            extracted_root=cleaned_root / "extracted",
+            output_root=output_root,
+            dataset_name="fidel_cleaned_test",
+            split_config=SplitConfig(
+                train_ratio=0.5,
+                val_ratio=0.25,
+                holdout_ratio=0.25,
+                seed=42,
+                strict_page_isolation=False,
+            ),
+        )
+
+        records = []
+        hf_root = run_dir / "data" / "hf_dataset"
+        for split_name in ["train", "val", "holdout"]:
+            records.extend(
+                json.loads(line)
+                for line in (hf_root / f"{split_name}.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line
+            )
+        assert len(records) == 1
+        assert records[0]["text"] == "good"
+    finally:
+        shutil.rmtree(base)
+
+
+def test_build_surya_dataset_include_suspect_uses_remaining_review_files():
+    base = Path(tempfile.mkdtemp(prefix="ocr_training_test_", dir=settings.BASE_DIR))
+    try:
+        extracted_root = base / "input" / "ocr_training" / "fidel" / "extracted"
+        manifests_root = (
+            base / "input" / "ocr_training" / "fidel" / "manifests" / "source_snapshots"
+        )
+        output_root = base / "output" / "ocr_training_datasets"
+        typed_img = extracted_root / "typed" / "good.png"
+        suspect_img = extracted_root / "synthetic" / "suspect.png"
+        _write_text_like_image(typed_img)
+        _write_blank_image(suspect_img)
+        manifests_root.mkdir(parents=True, exist_ok=True)
+        (manifests_root / "fidel_sources.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "sample_id": "good",
+                            "source_repo": "fidel_dataset",
+                            "source_split": "train",
+                            "original_filename": "good.png",
+                            "normalized_type": "typed",
+                            "text_raw": "good",
+                            "text_normalized": "good",
+                            "image_relpath": os.path.relpath(typed_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "sample_id": "suspect",
+                            "source_repo": "fidel_synthetic",
+                            "source_split": "synthetic",
+                            "original_filename": "suspect.png",
+                            "normalized_type": "synthetic",
+                            "text_raw": "suspect",
+                            "text_normalized": "suspect",
+                            "image_relpath": os.path.relpath(suspect_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        cleaned_root = base / "input" / "ocr_training" / "fidel_cleaned"
+        cleanup_fidel_extracted(
+            extracted_root=extracted_root,
+            output_root=cleaned_root,
+            workers=1,
+        )
+
+        run_dir = build_surya_dataset(
+            extracted_root=cleaned_root / "extracted",
+            output_root=output_root,
+            dataset_name="fidel_cleaned_test",
+            split_config=SplitConfig(
+                train_ratio=0.5,
+                val_ratio=0.25,
+                holdout_ratio=0.25,
+                seed=42,
+                strict_page_isolation=False,
+            ),
+            include_suspect=True,
+        )
+
+        records = []
+        hf_root = run_dir / "data" / "hf_dataset"
+        for split_name in ["train", "val", "holdout"]:
+            records.extend(
+                json.loads(line)
+                for line in (hf_root / f"{split_name}.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line
+            )
+        assert len(records) == 2
+        assert sorted(record["text"] for record in records) == ["good", "suspect"]
+    finally:
+        shutil.rmtree(base)
+
+
+def test_build_surya_dataset_include_suspect_respects_pruned_review_folder():
+    base = Path(tempfile.mkdtemp(prefix="ocr_training_test_", dir=settings.BASE_DIR))
+    try:
+        extracted_root = base / "input" / "ocr_training" / "fidel" / "extracted"
+        manifests_root = (
+            base / "input" / "ocr_training" / "fidel" / "manifests" / "source_snapshots"
+        )
+        output_root = base / "output" / "ocr_training_datasets"
+        typed_img = extracted_root / "typed" / "good.png"
+        suspect_img = extracted_root / "synthetic" / "suspect.png"
+        _write_text_like_image(typed_img)
+        _write_blank_image(suspect_img)
+        manifests_root.mkdir(parents=True, exist_ok=True)
+        (manifests_root / "fidel_sources.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "sample_id": "good",
+                            "source_repo": "fidel_dataset",
+                            "source_split": "train",
+                            "original_filename": "good.png",
+                            "normalized_type": "typed",
+                            "text_raw": "good",
+                            "text_normalized": "good",
+                            "image_relpath": os.path.relpath(typed_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "sample_id": "suspect",
+                            "source_repo": "fidel_synthetic",
+                            "source_split": "synthetic",
+                            "original_filename": "suspect.png",
+                            "normalized_type": "synthetic",
+                            "text_raw": "suspect",
+                            "text_normalized": "suspect",
+                            "image_relpath": os.path.relpath(suspect_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        cleaned_root = base / "input" / "ocr_training" / "fidel_cleaned"
+        cleanup_fidel_extracted(
+            extracted_root=extracted_root,
+            output_root=cleaned_root,
+            workers=1,
+        )
+
+        suspect_review_copy = cleaned_root / "suspect_blank_images" / suspect_img.name
+        assert suspect_review_copy.exists()
+        suspect_review_copy.unlink()
+
+        run_dir = build_surya_dataset(
+            extracted_root=cleaned_root / "extracted",
+            output_root=output_root,
+            dataset_name="fidel_cleaned_test",
+            split_config=SplitConfig(
+                train_ratio=0.5,
+                val_ratio=0.25,
+                holdout_ratio=0.25,
+                seed=42,
+                strict_page_isolation=False,
+            ),
+            include_suspect=True,
+        )
+
+        records = []
+        hf_root = run_dir / "data" / "hf_dataset"
+        for split_name in ["train", "val", "holdout"]:
+            records.extend(
+                json.loads(line)
+                for line in (hf_root / f"{split_name}.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line
+            )
+        assert len(records) == 1
+        assert records[0]["text"] == "good"
     finally:
         shutil.rmtree(base)
