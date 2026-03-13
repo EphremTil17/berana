@@ -8,7 +8,7 @@ It covers the practical path that was needed to get the training stack stable:
 - NVIDIA and CUDA checks
 - compiler and toolkit checks
 - Python environment creation
-- dataset extraction and build
+- dataset download, extraction, cleanup, and build
 - training launch
 - what artifacts to expect while training
 - what to do when a run finishes or is interrupted
@@ -91,12 +91,41 @@ Quick verification:
 python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
 ```
 
-## 4. Prepare Raw FIDEL Data
+## 4. Download Raw FIDEL Data
 
-Place raw FIDEL assets under:
+The simplest current path is to download the source datasets directly from Hugging Face into:
 
 ```text
 input/ocr_training/fidel/raw/
+```
+
+If `huggingface-cli` is not already available after `setup.sh`, verify the environment first before installing anything else. In the normal repo setup it should already be installed through the pinned requirements.
+
+Login:
+
+```bash
+huggingface-cli login
+```
+
+Create the raw directories:
+
+```bash
+mkdir -p input/ocr_training/fidel/raw/fidel_dataset
+mkdir -p input/ocr_training/fidel/raw/fidel_synthetic
+```
+
+Download the two upstream datasets:
+
+```bash
+huggingface-cli download upanzi/fidel-dataset \
+  --repo-type dataset \
+  --local-dir input/ocr_training/fidel/raw/fidel_dataset
+```
+
+```bash
+huggingface-cli download upanzi/Fidel-synthetic \
+  --repo-type dataset \
+  --local-dir input/ocr_training/fidel/raw/fidel_synthetic
 ```
 
 Expected source layout is handled by the extraction tool. The normal extraction flow includes:
@@ -121,19 +150,44 @@ Default behavior:
 
 This is intentional if you are targeting the typed + synthetic regime.
 
-## 6. Build the OCR Training Dataset
+## 6. Clean the Extracted Sources Before Dataset Build
+
+Run cleanup on the extracted assets before building the Surya dataset:
+
+```bash
+PYTHONPATH=. python tools/ocr_training.py cleanup-fidel \
+  --extracted-root input/ocr_training/fidel/extracted \
+  --output-root input/ocr_training/fidel_cleaned
+```
+
+This creates:
+
+- a cleaned extracted tree under `input/ocr_training/fidel_cleaned/extracted`
+- a rewritten source snapshot manifest under `input/ocr_training/fidel_cleaned/manifests/source_snapshots/`
+- review dumps:
+  - `excluded_blank_images/`
+  - `suspect_blank_images/`
+  - `blank_cleanup_review/`
+
+Important current behavior:
+
+- confirmed blanks are always excluded
+- suspect rows are excluded by default at dataset build time
+- if you manually prune `suspect_blank_images/` and later pass `--include-suspect`, only the suspect review copies still left in that folder are re-included
+
+## 7. Build the OCR Training Dataset
 
 ```bash
 PYTHONPATH=. python tools/ocr_training.py build-surya-dataset \
-  --extracted-root input/ocr_training/fidel/extracted \
+  --extracted-root input/ocr_training/fidel_cleaned/extracted \
   --output-root output/ocr_training_datasets \
-  --dataset-name fidel_typed_synthetic
+  --dataset-name fidel_typed_synthetic_clean
 ```
 
 This writes a versioned dataset run such as:
 
 ```text
-output/ocr_training_datasets/fidel_typed_synthetic_v01/
+output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/
 ```
 
 Important contents:
@@ -143,13 +197,33 @@ Important contents:
 - `data/hf_dataset/holdout.jsonl`
 - dataset manifests under the run directory
 
-## 7. Inspect the Dataset Before Training
+If you want to re-include reviewed suspects that still remain in `suspect_blank_images/`, use:
+
+```bash
+PYTHONPATH=. python tools/ocr_training.py build-surya-dataset \
+  --extracted-root input/ocr_training/fidel_cleaned/extracted \
+  --output-root output/ocr_training_datasets \
+  --dataset-name fidel_typed_synthetic_clean \
+  --include-suspect
+```
+
+## 8. Verify the Built Dataset
+
+```bash
+PYTHONPATH=. python tools/ocr_training.py verify-surya-dataset \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --output-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset_verification
+```
+
+This does not rewrite the built dataset. It is a sanity check that emits review artifacts for any remaining blank-image contradictions.
+
+## 9. Inspect the Dataset Before Training
 
 This is recommended before expensive runs:
 
 ```bash
 PYTHONPATH=. python tools/ocr_training.py inspect-surya-dataset \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset
 ```
 
 Use this to sanity-check:
@@ -159,7 +233,7 @@ Use this to sanity-check:
 - batch geometry
 - likely safe sequence-length / batch combinations
 
-## 8. Choose a Training Strategy
+## 10. Choose a Training Strategy
 
 ### Manual mode
 
@@ -176,7 +250,7 @@ Use manual mode when you want explicit control of:
 
 Use auto mode when you want the planner to benchmark admissible candidates and choose a configuration.
 
-## 9. Recommended First Full-Coverage Test Run
+## 11. Recommended First Full-Coverage Test Run
 
 One epoch over the full train split is often a better baseline than repeating a tiny train fraction many times.
 
@@ -184,8 +258,8 @@ Example:
 
 ```bash
 PYTHONPATH=. python tools/ocr_training.py train-surya \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
-  --output-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --output-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
   --mode manual \
   --finetune-strategy lora \
   --per-device-train-batch-size 6 \
@@ -205,7 +279,7 @@ PYTHONPATH=. python tools/ocr_training.py train-surya \
   --multi-gpu
 ```
 
-## 10. What the Runtime Does Automatically
+## 12. What the Runtime Does Automatically
 
 You do not need to remember extra commands for the core workflow.
 
@@ -244,7 +318,7 @@ The runtime automatically writes:
 - `manifests/eval_subset_manifest.jsonl`
 - `manifests/train_subset_manifest.jsonl` when `train_fraction < 1.0`
 
-## 11. Important Current Runtime Behavior
+## 13. Important Current Runtime Behavior
 
 ### Allocator setup
 
@@ -278,7 +352,7 @@ You can force the old guard behavior with:
 --no-ram-spillover
 ```
 
-## 12. Monitoring a Live Run
+## 14. Monitoring a Live Run
 
 The main live artifact is:
 
@@ -304,7 +378,7 @@ The runtime also logs:
 - best WER so far
 - evals since best CER
 
-## 13. Final Evaluation for Paper-Style Comparison
+## 15. Final Evaluation for Paper-Style Comparison
 
 Use explicit evaluation after training finishes.
 
@@ -312,8 +386,8 @@ Standard mixed evaluation:
 
 ```bash
 PYTHONPATH=. python tools/ocr_training.py evaluate-surya \
-  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
   --split holdout
 ```
 
@@ -321,15 +395,15 @@ Typed + synthetic separate evaluation:
 
 ```bash
 PYTHONPATH=. python tools/ocr_training.py evaluate-surya-modalities \
-  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
   --split holdout \
   --modalities typed,synthetic
 ```
 
 This is the command you should use when comparing against typed/synthetic rows reported in the dataset paper.
 
-## 14. Common Problems We Hit
+## 16. Common Problems We Hit
 
 ### Multi-GPU interrupt left GPUs pinned
 
@@ -376,7 +450,7 @@ Fix now in place:
 
 - seeded deterministic sampling
 
-## 15. Before You Launch a Real Run
+## 17. Before You Launch a Real Run
 
 Checklist:
 
@@ -385,30 +459,59 @@ Checklist:
 3. `g++ --version` works.
 4. `.venv` exists and activates.
 5. `torch.cuda.is_available()` is `True`.
-6. raw FIDEL data is extracted.
-7. Surya dataset is built.
-8. `inspect-surya-dataset` looks sane.
-9. you are using a fresh output directory.
-10. you know whether you want:
+6. raw FIDEL data is downloaded.
+7. raw FIDEL data is extracted.
+8. extracted FIDEL data is cleaned.
+9. Surya dataset is built and optionally verified.
+10. `inspect-surya-dataset` looks sane.
+11. you are using a fresh output directory.
+12. you know whether you want:
    - full-data one-epoch baseline
    - small fixed-fraction exploratory run
    - auto planner vs manual mode
 
-## 16. Minimal End-to-End Sequence
+## 18. Minimal End-to-End Sequence
 
 ```bash
 chmod +x setup.sh
 ./setup.sh
 source .venv/bin/activate
 
-PYTHONPATH=. python tools/ocr_training.py extract-fidel
-PYTHONPATH=. python tools/ocr_training.py build-surya-dataset
+huggingface-cli login
+mkdir -p input/ocr_training/fidel/raw/fidel_dataset
+mkdir -p input/ocr_training/fidel/raw/fidel_synthetic
+
+huggingface-cli download upanzi/fidel-dataset \
+  --repo-type dataset \
+  --local-dir input/ocr_training/fidel/raw/fidel_dataset
+
+huggingface-cli download upanzi/Fidel-synthetic \
+  --repo-type dataset \
+  --local-dir input/ocr_training/fidel/raw/fidel_synthetic
+
+PYTHONPATH=. python tools/ocr_training.py extract-fidel \
+  --raw-root input/ocr_training/fidel/raw \
+  --extracted-root input/ocr_training/fidel/extracted
+
+PYTHONPATH=. python tools/ocr_training.py cleanup-fidel \
+  --extracted-root input/ocr_training/fidel/extracted \
+  --output-root input/ocr_training/fidel_cleaned
+
+PYTHONPATH=. python tools/ocr_training.py build-surya-dataset \
+  --extracted-root input/ocr_training/fidel_cleaned/extracted \
+  --output-root output/ocr_training_datasets \
+  --dataset-name fidel_typed_synthetic_clean
+
+PYTHONPATH=. python tools/ocr_training.py verify-surya-dataset \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --output-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset_verification
+
 PYTHONPATH=. python tools/ocr_training.py inspect-surya-dataset \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset
 
 PYTHONPATH=. python tools/ocr_training.py train-surya \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
-  --output-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --output-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
   --mode manual \
   --finetune-strategy lora \
   --per-device-train-batch-size 6 \
@@ -428,8 +531,8 @@ PYTHONPATH=. python tools/ocr_training.py train-surya \
   --multi-gpu
 
 PYTHONPATH=. python tools/ocr_training.py evaluate-surya-modalities \
-  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
   --split holdout \
   --modalities typed,synthetic
 ```

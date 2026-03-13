@@ -1,163 +1,76 @@
 from __future__ import annotations
 
 import json
-from collections import deque
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
-from PIL import Image
 from tqdm import tqdm
 
-from modules.ocr_benchmark.metrics import calculate_cer_wer_paper
+from modules.ocr_training.distributed import maybe_barrier
 from modules.ocr_training.registry import STAGE_SURYA_EVALUATE, register_training_stage
-from modules.ocr_training.surya_common import (
-    deterministic_sample_rows,
-    infer_row_modality,
-    load_split_rows,
-    relative_to_base,
-    sanitize_prediction_text,
-    subset_rows,
+from modules.ocr_training.surya_common import load_split_rows, relative_to_base
+from modules.ocr_training.surya_eval_runtime import (
+    PreparedEvalRows,
+    prepare_eval_rows,
+    run_surya_eval_batches,
 )
 from modules.ocr_training.surya_reports import (
     write_confusion_artifacts,
     write_training_report_bundle,
 )
+from utils.logger import get_logger
 
-TAG_FILTER_LIST = [
-    "p",
-    "li",
-    "ul",
-    "ol",
-    "table",
-    "td",
-    "tr",
-    "th",
-    "tbody",
-    "pre",
-    "b",
-    "strong",
-    "i",
-    "em",
-    "u",
-    "span",
-    "div",
-    "br",
-    "sup",
-    "sub",
-]
+logger = get_logger("OCRTrainingSuryaEval")
 
 
-def _chunk_rows(rows: list[dict[str, str]], batch_size: int) -> list[list[dict[str, str]]]:
-    return [rows[index : index + batch_size] for index in range(0, len(rows), batch_size)]
+def _count_jsonl_rows(path: Path) -> int:
+    if not path.exists():
+        return 0
+    with path.open("r", encoding="utf-8") as handle:
+        return sum(1 for line in handle if line.strip())
 
 
-def _shard_rows_for_rank(
-    rows: list[dict[str, str]],
+def _dataset_split_counts(dataset_dir: Path) -> dict[str, int]:
+    return {
+        split_name: _count_jsonl_rows(dataset_dir / f"{split_name}.jsonl")
+        for split_name in ("train", "val", "holdout")
+    }
+
+
+def _log_eval_start_summary(
     *,
-    rank: int,
-    world_size: int,
-) -> list[dict[str, str]]:
-    if world_size <= 1:
-        return rows
-    return [row for index, row in enumerate(rows) if index % world_size == rank]
-
-
-def build_in_memory_eval_predictor(*, runtime, model, processor):
-    """Build a RecognitionPredictor around the current in-memory training model."""
-    torch = runtime["torch"]
-    foundation_cls = runtime["FoundationPredictor"]
-    foundation_predictor = foundation_cls.__new__(foundation_cls)
-    foundation_predictor.model = model
-    foundation_predictor.processor = processor
-    foundation_predictor.prompt_queue = deque()
-    foundation_predictor.batch_prompt_mapping = None
-    foundation_predictor.kv_cache = None
-    foundation_predictor.beacon_token_interval = model.config.beacon_token_interval
-    foundation_predictor.device_pad_token = torch.tensor(
-        processor.pad_token_id,
-        device=model.device,
-        dtype=torch.long,
-    )
-    foundation_predictor.device_beacon_token = torch.tensor(
-        processor.beacon_token_id,
-        device=model.device,
-        dtype=torch.long,
-    )
-    foundation_predictor.special_token_ids = torch.tensor(
-        [model.config.image_token_id, *model.config.register_token_ids],
-        device=model.device,
-    )
-    foundation_predictor.pad_to_multiple = None
-    foundation_predictor._disable_tqdm = False
-    predictor = runtime["RecognitionPredictor"](foundation_predictor)
-    predictor.disable_tqdm = True
-    return predictor
-
-
-def _predict_surya_records(
-    *,
-    rows: list[dict[str, str]],
+    dataset_dir: Path,
     split: str,
+    prepared_rows: PreparedEvalRows,
+    eval_fraction: float,
+    max_rows: int | None,
     eval_batch_size: int,
-    predictor,
-    runtime,
-    distributed_context=None,
-    torch_module=None,
-) -> tuple[list[dict[str, Any]], int]:
-    """Run OCR inference for one deterministic row list and return gathered prediction records."""
-    rank = int(getattr(distributed_context, "rank", 0) if distributed_context else 0)
-    world_size = int(getattr(distributed_context, "world_size", 1) if distributed_context else 1)
-    local_rows = _shard_rows_for_rank(rows, rank=rank, world_size=world_size)
-
-    records = []
-    for row_batch in tqdm(
-        _chunk_rows(local_rows, max(1, eval_batch_size)),
-        desc=f"Evaluate {split}",
-        unit="batch",
-        dynamic_ncols=True,
-        disable=bool(distributed_context and not distributed_context.is_rank_zero),
+    dataloader_num_workers: int,
+    modality: str | None,
+    distributed_context,
+) -> None:
+    if (
+        distributed_context
+        and distributed_context.is_distributed
+        and not distributed_context.is_rank_zero
     ):
-        images = []
-        bboxes = []
-        for row in row_batch:
-            with Image.open(Path(row["image"])) as image:
-                converted = image.convert("RGB")
-            images.append(converted)
-            bboxes.append([[0, 0, converted.width, converted.height]])
-        results = predictor(
-            images,
-            task_names=[runtime["TaskNames"].ocr_with_boxes] * len(images),
-            bboxes=bboxes,
-            math_mode=False,
-            drop_repeated_text=True,
-            filter_tag_list=TAG_FILTER_LIST,
-        )
-        for row, result in zip(row_batch, results, strict=False):
-            raw_pred = (
-                sanitize_prediction_text(result.text_lines[0].text) if result.text_lines else ""
-            )
-            gt_text = row["text"]
-            cer, wer, exact = calculate_cer_wer_paper(raw_pred, gt_text)
-            records.append(
-                {
-                    "image": row["image"],
-                    "gt_text": gt_text,
-                    "pred_text": raw_pred,
-                    "cer": cer,
-                    "wer": wer,
-                    "exact": exact,
-                }
-            )
-    if distributed_context and distributed_context.is_distributed:
-        gathered_records: list[list[dict[str, Any]] | None] = [
-            None
-        ] * distributed_context.world_size
-        torch_module.distributed.all_gather_object(gathered_records, records)
-        if not distributed_context.is_rank_zero:
-            return [], world_size
-        records = [record for chunk in gathered_records if chunk for record in chunk]
-    return records, world_size
+        return
+    split_counts = _dataset_split_counts(dataset_dir)
+    logger.info(
+        "Starting Surya eval split=%s selected_rows=%d dataset_rows={train:%d,val:%d,holdout:%d} "
+        "modality=%s eval_fraction=%.4f max_rows=%s batch=%d workers=%d",
+        split,
+        len(prepared_rows.rows),
+        split_counts["train"],
+        split_counts["val"],
+        split_counts["holdout"],
+        modality or "all",
+        eval_fraction,
+        max_rows,
+        eval_batch_size,
+        dataloader_num_workers,
+    )
 
 
 def _write_surya_eval_outputs(
@@ -170,6 +83,7 @@ def _write_surya_eval_outputs(
     eval_fraction: float,
     max_rows: int | None,
     eval_batch_size: int,
+    dataloader_num_workers: int,
     seed: int,
     records: list[dict[str, Any]],
     world_size: int,
@@ -189,8 +103,15 @@ def _write_surya_eval_outputs(
     if include_predictions:
         predictions_path = eval_dir / f"predictions_{suffix}.jsonl"
         with predictions_path.open("w", encoding="utf-8") as handle:
-            for record in records:
+            progress = tqdm(
+                records,
+                desc=f"Write predictions {suffix}",
+                unit="row",
+                dynamic_ncols=True,
+            )
+            for record in progress:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            progress.close()
 
     summary_path = eval_dir / f"summary_{suffix}.json"
     summary_payload = {
@@ -200,6 +121,7 @@ def _write_surya_eval_outputs(
         "world_size": world_size,
         "eval_fraction": eval_fraction,
         "eval_batch_size": eval_batch_size,
+        "dataloader_num_workers": dataloader_num_workers,
         "max_rows": max_rows,
         "seed": seed,
         "mean_cer": mean_cer,
@@ -223,6 +145,7 @@ def _write_surya_eval_outputs(
                     f"- Rows: `{len(records)}`",
                     f"- Eval Fraction: `{eval_fraction:.4f}`",
                     f"- Eval Batch Size: `{eval_batch_size}`",
+                    f"- Dataloader Workers: `{dataloader_num_workers}`",
                     f"- Max Rows: `{max_rows}`",
                     f"- Seed: `{seed}`",
                     f"- Mean CER: `{mean_cer:.4f}`",
@@ -274,6 +197,7 @@ def _write_surya_eval_outputs(
                 "world_size": world_size,
                 "eval_fraction": eval_fraction,
                 "eval_batch_size": eval_batch_size,
+                "dataloader_num_workers": dataloader_num_workers,
                 "max_rows": max_rows,
                 "seed": seed,
                 "mean_cer": mean_cer,
@@ -293,6 +217,7 @@ def evaluate_surya_rows(
     eval_fraction: float,
     max_rows: int | None,
     eval_batch_size: int,
+    dataloader_num_workers: int,
     seed: int,
     modality: str | None,
     predictor,
@@ -306,27 +231,30 @@ def evaluate_surya_rows(
     include_report_bundle: bool = True,
 ) -> dict[str, Any]:
     """Evaluate one prepared row list with a ready RecognitionPredictor-compatible object."""
-    records, world_size = _predict_surya_records(
+    eval_artifacts = run_surya_eval_batches(
         rows=rows,
         split=split,
         eval_batch_size=eval_batch_size,
         predictor=predictor,
         runtime=runtime,
+        dataloader_num_workers=dataloader_num_workers,
         distributed_context=distributed_context,
         torch_module=torch_module,
+        collect_batch_timings=False,
     )
     if (
         distributed_context
         and distributed_context.is_distributed
         and not distributed_context.is_rank_zero
     ):
+        maybe_barrier(torch_module=torch_module, context=distributed_context)
         return {
             "status": "completed_nonzero_rank",
             "rank": distributed_context.rank,
-            "num_rows": len(records),
+            "num_rows": len(eval_artifacts.records),
         }
     eval_dir = output_dir or (run_dir / "tool_evaluation")
-    return _write_surya_eval_outputs(
+    summary = _write_surya_eval_outputs(
         run_key=run_key,
         run_dir=run_dir,
         eval_dir=eval_dir,
@@ -335,14 +263,18 @@ def evaluate_surya_rows(
         eval_fraction=eval_fraction,
         max_rows=max_rows,
         eval_batch_size=eval_batch_size,
+        dataloader_num_workers=dataloader_num_workers,
         seed=seed,
-        records=records,
-        world_size=world_size,
+        records=eval_artifacts.records,
+        world_size=eval_artifacts.world_size,
         register_stage=register_stage,
         include_predictions=include_predictions,
         include_confusions=include_confusions,
         include_report_bundle=include_report_bundle,
     )
+    if distributed_context and distributed_context.is_distributed:
+        maybe_barrier(torch_module=torch_module, context=distributed_context)
+    return summary
 
 
 def evaluate_surya_checkpoint(
@@ -354,6 +286,7 @@ def evaluate_surya_checkpoint(
     eval_fraction: float,
     max_rows: int | None,
     eval_batch_size: int,
+    dataloader_num_workers: int = 0,
     seed: int,
     modality: str | None = None,
     runtime,
@@ -363,25 +296,36 @@ def evaluate_surya_checkpoint(
     output_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Evaluate Surya OCR predictions against target split labels."""
-    rows = load_split_rows(dataset_dir, split)
-    if modality is not None:
-        normalized_modality = modality.strip().lower()
-        rows = [row for row in rows if infer_row_modality(row) == normalized_modality]
-    if eval_fraction < 1.0:
-        rows = subset_rows(rows, fraction=eval_fraction, seed=seed)
-    if max_rows is not None and len(rows) > max_rows:
-        rows = deterministic_sample_rows(rows, max_rows=max_rows, seed=seed)
+    prepared_rows: PreparedEvalRows = prepare_eval_rows(
+        rows=load_split_rows(dataset_dir, split),
+        modality=modality,
+        eval_fraction=eval_fraction,
+        max_rows=max_rows,
+        seed=seed,
+    )
+    _log_eval_start_summary(
+        dataset_dir=dataset_dir,
+        split=split,
+        prepared_rows=prepared_rows,
+        eval_fraction=eval_fraction,
+        max_rows=max_rows,
+        eval_batch_size=eval_batch_size,
+        dataloader_num_workers=dataloader_num_workers,
+        modality=modality,
+        distributed_context=distributed_context,
+    )
     foundation_predictor = load_surya_eval_predictor(runtime, run_dir)
     predictor = runtime["RecognitionPredictor"](foundation_predictor)
     predictor.disable_tqdm = True
     return evaluate_surya_rows(
         run_key=run_key,
         run_dir=run_dir,
-        rows=rows,
+        rows=prepared_rows.rows,
         split=split,
         eval_fraction=eval_fraction,
         max_rows=max_rows,
         eval_batch_size=eval_batch_size,
+        dataloader_num_workers=dataloader_num_workers,
         seed=seed,
         modality=modality,
         predictor=predictor,
@@ -405,6 +349,7 @@ def evaluate_surya_modalities(
     eval_fraction: float,
     max_rows: int | None,
     eval_batch_size: int,
+    dataloader_num_workers: int = 0,
     seed: int,
     modalities: list[str],
     runtime,
@@ -424,6 +369,7 @@ def evaluate_surya_modalities(
             eval_fraction=eval_fraction,
             max_rows=max_rows,
             eval_batch_size=eval_batch_size,
+            dataloader_num_workers=dataloader_num_workers,
             seed=seed,
             modality=modality,
             runtime=runtime,
@@ -447,6 +393,7 @@ def evaluate_surya_modalities(
         "eval_fraction": eval_fraction,
         "max_rows": max_rows,
         "eval_batch_size": eval_batch_size,
+        "dataloader_num_workers": dataloader_num_workers,
     }
     combined_summary_path.write_text(
         json.dumps(combined_payload, indent=2, ensure_ascii=False),

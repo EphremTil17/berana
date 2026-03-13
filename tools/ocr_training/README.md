@@ -30,12 +30,14 @@ The OCR training stack is meant to behave more like a mature training framework 
 The end-to-end flow is:
 
 1. Extract raw FIDEL assets.
-2. Build the Surya dataset.
-3. Inspect batch/token geometry if needed.
-4. Train with `train-surya`.
-5. Let the runtime auto-write live reports during training.
-6. Let the runtime auto-generate final report assets on completion or interrupt.
-7. Optionally run explicit per-modality evaluation for paper-style comparison.
+2. Run `cleanup-fidel` to produce a cleaned extracted tree and review buckets.
+3. Build the Surya dataset from the cleaned extracted tree.
+4. Optionally run `verify-surya-dataset` on the built `hf_dataset`.
+5. Inspect batch/token geometry if needed.
+6. Train with `train-surya`.
+7. Let the runtime auto-write live reports during training.
+8. Let the runtime auto-generate final report assets on completion or interrupt.
+9. Run explicit evaluation or benchmarking against the saved run/checkpoints.
 
 ## Main Commands
 
@@ -56,9 +58,9 @@ Default behavior:
 
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py build-surya-dataset \
-  --extracted-root input/ocr_training/fidel/extracted \
+  --extracted-root input/ocr_training/fidel_cleaned/extracted \
   --output-root output/ocr_training_datasets \
-  --dataset-name fidel_typed_synthetic
+  --dataset-name fidel_typed_synthetic_clean
 ```
 
 This creates a versioned dataset run with:
@@ -69,11 +71,42 @@ This creates a versioned dataset run with:
 - split manifests
 - row manifests under the dataset run
 
+Suspect review semantics:
+
+- by default, `build-surya-dataset` excludes confirmed blanks and all suspect rows from the cleaned review manifest
+- `--include-suspect` re-includes only the suspect review copies still left in `suspect_blank_images/`
+- deleting a review-copy from `suspect_blank_images/` keeps that row excluded
+
+### 2a. Clean extracted FIDEL assets
+
+```bash
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py cleanup-fidel \
+  --extracted-root input/ocr_training/fidel/extracted \
+  --output-root input/ocr_training/fidel_cleaned
+```
+
+This stage:
+
+- clones the extracted tree into a cleaned root
+- excludes high-confidence blank rows from the cleaned snapshot
+- emits `excluded_blank_images/` and `suspect_blank_images/` review buckets
+- writes cleanup review manifests under `blank_cleanup_review/`
+
+### 2b. Verify the built Surya dataset
+
+```bash
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py verify-surya-dataset \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --output-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset_verification
+```
+
+This is a post-build audit. It does not rewrite the dataset; it emits confirmed/suspect review artifacts so you can confirm that known bad blank-image rows did not survive dataset generation.
+
 ### 3. Inspect token and batch geometry
 
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py inspect-surya-dataset \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset
 ```
 
 Use this before large runs when tuning:
@@ -89,8 +122,8 @@ Example full-data one-epoch manual LoRA run:
 
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
-  --output-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --output-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
   --mode manual \
   --finetune-strategy lora \
   --per-device-train-batch-size 6 \
@@ -123,8 +156,9 @@ Standard eval:
 
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py evaluate-surya \
-  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --metric cer \
   --split holdout
 ```
 
@@ -132,11 +166,43 @@ Per-modality eval:
 
 ```bash
 PYTHONPATH=. .venv/bin/python tools/ocr_training.py evaluate-surya-modalities \
-  --run-dir output/ocr_training_runs/fidel_typed_synthetic_5090_lora_full1ep_v01 \
-  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
   --split holdout \
+  --metric cer \
   --modalities typed,synthetic
 ```
+
+### 6. Benchmark explicit Surya evaluation throughput
+
+```bash
+PYTHONPATH=. .venv/bin/python tools/ocr_training.py benchmark-surya-eval \
+  --run-dir output/ocr_training_runs/fidel_typed_synthetic_clean_5090_lora_full1ep_v01 \
+  --dataset-dir output/ocr_training_datasets/fidel_typed_synthetic_clean_v01/data/hf_dataset \
+  --metric cer \
+  --split holdout \
+  --eval-fraction 0.01 \
+  --candidate-eval-batch-sizes 8,16,24,32
+```
+
+Benchmark notes:
+
+- `--run-dir` is required and should point to the root training run directory that contains saved checkpoints and `weights/`
+- `--metric cer|wer|latest` selects which saved model to benchmark by default
+- `--checkpoint-path` overrides metric-based selection and benchmarks one explicit checkpoint directory
+- `--candidate-eval-batch-sizes` is required for the benchmark sweep
+- `--candidate-worker-counts` is optional and linked positionally one-to-one with batch sizes
+- if `--candidate-worker-counts` is omitted, every benchmark candidate runs sequentially with `0` workers
+- benchmark artifacts are written under `output/ocr_benchmark/gpu_performance_eval_vNN/<run-stem>/` unless `--output-dir` is set
+
+Benchmark artifacts include:
+
+- `benchmark_summary.json`
+- `batch_timings.jsonl`
+- `stage_timings.json`
+- `candidate_results.jsonl`
+- `selected_benchmark_config.json`
+- `benchmark_report.md`
 
 ### 6. Optional manual utilities
 

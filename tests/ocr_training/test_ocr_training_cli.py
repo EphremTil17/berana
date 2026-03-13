@@ -10,6 +10,8 @@ from tools.ocr_training import (
     _build_multi_gpu_launch_command,
     _dataset_run_stem,
     _merge_pytorch_alloc_conf,
+    _normalize_metric_selector,
+    _resolve_tool_benchmark_output_dir,
     _resolve_tool_eval_output_dir,
     _resolve_train_output_dir,
     _strip_version_suffix,
@@ -39,6 +41,22 @@ def test_dataset_run_stem_infers_parent_dataset_name(tmp_path: Path):
     dataset_dir.mkdir(parents=True)
 
     assert _dataset_run_stem(dataset_dir) == "fidel_typed_synthetic"
+
+
+def test_normalize_metric_selector_maps_user_facing_values():
+    assert _normalize_metric_selector("cer") == "best_cer"
+    assert _normalize_metric_selector("wer") == "best_wer"
+    assert _normalize_metric_selector("latest") == "latest"
+    assert _normalize_metric_selector("best_cer") == "best_cer"
+
+
+def test_normalize_metric_selector_rejects_unknown_values():
+    try:
+        _normalize_metric_selector("foo")
+    except Exception as exc:
+        assert "--metric must be one of: cer, wer, latest" in str(exc)
+    else:
+        raise AssertionError("Expected invalid metric selector to raise.")
 
 
 def test_resolve_train_output_dir_defaults_to_versioned_auto_run(tmp_path: Path, monkeypatch):
@@ -79,6 +97,29 @@ def test_resolve_tool_eval_output_dir_defaults_to_versioned_run_dir(tmp_path: Pa
     resolved = _resolve_tool_eval_output_dir(run_dir=run_dir, output_dir=None)
 
     assert resolved == run_dir / "tool_evaluation_v02"
+
+
+def test_resolve_tool_benchmark_output_dir_defaults_to_ocr_benchmark_root(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    run_dir = (
+        tmp_path / "output" / "ocr_training_runs" / "fidel_typed_synthetic_5090_lora_evalfix_v01"
+    )
+    run_dir.mkdir(parents=True)
+    (
+        tmp_path
+        / "output"
+        / "ocr_benchmark"
+        / "gpu_performance_eval_v01"
+        / "fidel_typed_synthetic_5090_lora_evalfix"
+    ).mkdir(parents=True)
+
+    resolved = _resolve_tool_benchmark_output_dir(run_dir=run_dir, output_dir=None)
+
+    assert resolved == Path(
+        "output/ocr_benchmark/gpu_performance_eval_v02/fidel_typed_synthetic_5090_lora_evalfix"
+    )
 
 
 def test_visible_cuda_device_count_prefers_cuda_visible_devices(monkeypatch):
@@ -187,3 +228,44 @@ def test_monitor_surya_run_command_reports_summary(tmp_path: Path):
 
     assert result.exit_code == 0
     assert "monitor-surya-run selection_metric" in result.stdout
+
+
+def test_benchmark_surya_eval_requires_candidate_lists():
+    result = runner.invoke(
+        app,
+        [
+            "benchmark-surya-eval",
+            "--run-dir",
+            "output/ocr_training_runs/fidel_typed_synthetic_5090_lora_evalfix_v01",
+            "--dataset-dir",
+            "output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset",
+            "--metric",
+            "cer",
+            "--candidate-worker-counts",
+            "0,4",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--candidate-eval-batch-sizes" in result.output
+
+
+def test_benchmark_surya_eval_rejects_mismatched_linked_candidate_lengths():
+    result = runner.invoke(
+        app,
+        [
+            "benchmark-surya-eval",
+            "--run-dir",
+            "output/ocr_training_runs/fidel_typed_synthetic_5090_lora_evalfix_v01",
+            "--dataset-dir",
+            "output/ocr_training_datasets/fidel_typed_synthetic_v01/data/hf_dataset",
+            "--metric",
+            "cer",
+            "--candidate-eval-batch-sizes",
+            "4,8,12",
+            "--candidate-worker-counts",
+            "0,4",
+        ],
+    )
+
+    assert result.exit_code != 0

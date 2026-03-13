@@ -17,6 +17,7 @@ from modules.ocr_training.distributed.context import torchrun_is_active
 from modules.ocr_training.fidel_cleanup import cleanup_fidel_extracted
 from modules.ocr_training.fidel_extract import extract_fidel
 from modules.ocr_training.schemas import SplitConfig, SuryaTrainConfig, TrainMode
+from modules.ocr_training.surya_benchmark import benchmark_surya_eval
 from modules.ocr_training.surya_cleanup import verify_surya_dataset
 from modules.ocr_training.surya_dataset import build_surya_dataset
 from modules.ocr_training.surya_debug import extract_exact_false_debug_bundle
@@ -77,6 +78,53 @@ def _resolve_tool_eval_output_dir(*, run_dir: Path, output_dir: Path | None) -> 
     if output_dir is not None:
         return output_dir
     return next_versioned_dir(run_dir, "tool_evaluation")
+
+
+def _resolve_tool_benchmark_output_dir(*, run_dir: Path, output_dir: Path | None) -> Path:
+    """Resolve the explicit or auto-versioned output directory for eval benchmark artifacts."""
+    if output_dir is not None:
+        return output_dir
+    benchmark_run_dir = next_versioned_dir(Path("output/ocr_benchmark"), "gpu_performance_eval")
+    return benchmark_run_dir / _strip_version_suffix(run_dir.resolve().name)
+
+
+def _validate_eval_cli_args(
+    *,
+    split: str,
+    eval_fraction: float,
+    eval_batch_size: int,
+    dataloader_num_workers: int,
+    max_rows: int | None,
+) -> str:
+    """Validate shared explicit-eval CLI arguments and return normalized split."""
+    normalized_split = split.strip().lower()
+    if normalized_split not in {"holdout", "val", "train"}:
+        raise typer.BadParameter("--split must be one of: train, val, holdout")
+    if not 0 < eval_fraction <= 1.0:
+        raise typer.BadParameter("--eval-fraction must be in the interval (0, 1].")
+    if eval_batch_size < 1:
+        raise typer.BadParameter("--eval-batch-size must be >= 1.")
+    if dataloader_num_workers < 0:
+        raise typer.BadParameter("--dataloader-num-workers must be >= 0.")
+    if max_rows is not None and max_rows < 1:
+        raise typer.BadParameter("--max-rows must be >= 1 when provided.")
+    return normalized_split
+
+
+def _normalize_metric_selector(value: str) -> str:
+    """Map a user-facing metric selector onto one checkpoint target key."""
+    normalized = value.strip().lower()
+    mapping = {
+        "cer": "best_cer",
+        "best_cer": "best_cer",
+        "wer": "best_wer",
+        "best_wer": "best_wer",
+        "latest": "latest",
+    }
+    try:
+        return mapping[normalized]
+    except KeyError as exc:
+        raise typer.BadParameter("--metric must be one of: cer, wer, latest") from exc
 
 
 def _cli_is_rank_zero() -> bool:
@@ -704,6 +752,13 @@ def cli_evaluate_surya(
         int,
         typer.Option("--eval-batch-size", help="Batch size for Surya inference during evaluation."),
     ] = 8,
+    dataloader_num_workers: Annotated[
+        int,
+        typer.Option(
+            "--dataloader-num-workers",
+            help="Worker count for parallel image decode/load during explicit evaluation.",
+        ),
+    ] = 0,
     max_rows: Annotated[
         int | None,
         typer.Option("--max-rows", help="Optional cap on evaluated rows after split subsetting."),
@@ -712,13 +767,14 @@ def cli_evaluate_surya(
         int,
         typer.Option("--seed", help="Deterministic seed for evaluation subsetting."),
     ] = 42,
-    checkpoint_target: Annotated[
+    metric: Annotated[
         str,
         typer.Option(
+            "--metric",
             "--checkpoint-target",
-            help="Which checkpoint to evaluate: best_cer, best_wer, or latest.",
+            help="Which saved model to use: cer, wer, or latest.",
         ),
-    ] = "best_cer",
+    ] = "cer",
     checkpoint_path: Annotated[
         Path | None,
         typer.Option(
@@ -742,18 +798,14 @@ def cli_evaluate_surya(
     ] = False,
 ):
     """Evaluate Surya checkpoint on untouched split and emit CER/WER summary artifacts."""
-    split = split.strip().lower()
-    if split not in {"holdout", "val", "train"}:
-        raise typer.BadParameter("--split must be one of: train, val, holdout")
-    if not 0 < eval_fraction <= 1.0:
-        raise typer.BadParameter("--eval-fraction must be in the interval (0, 1].")
-    if eval_batch_size < 1:
-        raise typer.BadParameter("--eval-batch-size must be >= 1.")
-    if max_rows is not None and max_rows < 1:
-        raise typer.BadParameter("--max-rows must be >= 1 when provided.")
-    checkpoint_target = checkpoint_target.strip().lower()
-    if checkpoint_target not in {"best_cer", "best_wer", "latest"}:
-        raise typer.BadParameter("--checkpoint-target must be one of: best_cer, best_wer, latest")
+    split = _validate_eval_cli_args(
+        split=split,
+        eval_fraction=eval_fraction,
+        eval_batch_size=eval_batch_size,
+        dataloader_num_workers=dataloader_num_workers,
+        max_rows=max_rows,
+    )
+    checkpoint_target = _normalize_metric_selector(metric)
 
     resolved_output_dir = _resolve_tool_eval_output_dir(run_dir=run_dir, output_dir=output_dir)
     if output_dir is None and _cli_is_rank_zero():
@@ -770,6 +822,7 @@ def cli_evaluate_surya(
             split=split,
             eval_fraction=eval_fraction,
             eval_batch_size=eval_batch_size,
+            dataloader_num_workers=dataloader_num_workers,
             max_rows=max_rows,
             seed=seed,
             checkpoint_target=checkpoint_target,
@@ -814,6 +867,13 @@ def cli_evaluate_surya_modalities(
         int,
         typer.Option("--eval-batch-size", help="Batch size for Surya inference during evaluation."),
     ] = 8,
+    dataloader_num_workers: Annotated[
+        int,
+        typer.Option(
+            "--dataloader-num-workers",
+            help="Worker count for parallel image decode/load during explicit evaluation.",
+        ),
+    ] = 0,
     max_rows: Annotated[
         int | None,
         typer.Option("--max-rows", help="Optional cap on evaluated rows after split subsetting."),
@@ -822,13 +882,14 @@ def cli_evaluate_surya_modalities(
         int,
         typer.Option("--seed", help="Deterministic seed for evaluation subsetting."),
     ] = 42,
-    checkpoint_target: Annotated[
+    metric: Annotated[
         str,
         typer.Option(
+            "--metric",
             "--checkpoint-target",
-            help="Which checkpoint to evaluate: best_cer, best_wer, or latest.",
+            help="Which saved model to use: cer, wer, or latest.",
         ),
-    ] = "best_cer",
+    ] = "cer",
     checkpoint_path: Annotated[
         Path | None,
         typer.Option(
@@ -859,9 +920,14 @@ def cli_evaluate_surya_modalities(
     ] = "typed,synthetic",
 ):
     """Evaluate a run separately across typed/synthetic modalities."""
-    checkpoint_target = checkpoint_target.strip().lower()
-    if checkpoint_target not in {"best_cer", "best_wer", "latest"}:
-        raise typer.BadParameter("--checkpoint-target must be one of: best_cer, best_wer, latest")
+    split = _validate_eval_cli_args(
+        split=split,
+        eval_fraction=eval_fraction,
+        eval_batch_size=eval_batch_size,
+        dataloader_num_workers=dataloader_num_workers,
+        max_rows=max_rows,
+    )
+    checkpoint_target = _normalize_metric_selector(metric)
     resolved_output_dir = _resolve_tool_eval_output_dir(run_dir=run_dir, output_dir=output_dir)
     if output_dir is None and _cli_is_rank_zero():
         log.info("Resolved tool evaluation output_dir=%s", resolved_output_dir)
@@ -873,9 +939,10 @@ def cli_evaluate_surya_modalities(
             run_key=run_key,
             run_dir=run_dir,
             dataset_dir=dataset_dir,
-            split=split.strip().lower(),
+            split=split,
             eval_fraction=eval_fraction,
             eval_batch_size=eval_batch_size,
+            dataloader_num_workers=dataloader_num_workers,
             max_rows=max_rows,
             seed=seed,
             modalities=sorted(_csv_to_set(modalities)),
@@ -893,6 +960,152 @@ def cli_evaluate_surya_modalities(
         "evaluate-surya-modalities complete split=%s modalities=%s",
         split,
         ",".join(sorted(summary["modalities"])),
+    )
+
+
+@app.command("benchmark-surya-eval")
+def cli_benchmark_surya_eval(
+    run_dir: Annotated[
+        Path,
+        typer.Option("--run-dir", help="Directory containing finetuned Surya checkpoints."),
+    ],
+    dataset_dir: Annotated[
+        Path,
+        typer.Option("--dataset-dir", help="Path to generated hf_dataset directory."),
+    ],
+    run_key: Annotated[
+        str,
+        typer.Option("--run-key", help="Registry run key/stem."),
+    ] = "fidel_typed_synthetic",
+    split: Annotated[str, typer.Option("--split", help="Dataset split to benchmark.")] = "holdout",
+    eval_fraction: Annotated[
+        float,
+        typer.Option(
+            "--eval-fraction", help="Deterministic fraction of the requested split to benchmark."
+        ),
+    ] = 1.0,
+    max_rows: Annotated[
+        int | None,
+        typer.Option("--max-rows", help="Optional cap on benchmarked rows after split subsetting."),
+    ] = None,
+    seed: Annotated[
+        int,
+        typer.Option("--seed", help="Deterministic seed for benchmark subsetting."),
+    ] = 42,
+    metric: Annotated[
+        str,
+        typer.Option(
+            "--metric",
+            "--checkpoint-target",
+            help="Which saved model to benchmark: cer, wer, or latest.",
+        ),
+    ] = "cer",
+    checkpoint_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--checkpoint-path",
+            help="Optional explicit checkpoint/adapter directory to benchmark.",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Optional output directory for benchmark artifacts. Defaults to output/ocr_benchmark/gpu_performance_eval_vNN/<run-stem>.",
+        ),
+    ] = None,
+    candidate_eval_batch_sizes: Annotated[
+        str,
+        typer.Option(
+            "--candidate-eval-batch-sizes",
+            help="Required comma-separated eval batch sizes to sweep, for example 4,8,12,16.",
+        ),
+    ] = ...,
+    candidate_worker_counts: Annotated[
+        str | None,
+        typer.Option(
+            "--candidate-worker-counts",
+            help="Optional comma-separated worker counts linked positionally to --candidate-eval-batch-sizes. If omitted, every candidate runs sequentially with 0 workers.",
+        ),
+    ] = None,
+    max_vram_ratio: Annotated[
+        float,
+        typer.Option(
+            "--max-vram-ratio",
+            help="Reject benchmark candidates whose measured peak VRAM exceeds this ratio of total VRAM.",
+        ),
+    ] = 0.95,
+    multi_gpu: Annotated[
+        bool,
+        typer.Option(
+            "--multi-gpu/--single-gpu",
+            help="Use all visible local GPUs and relaunch under torchrun automatically.",
+        ),
+    ] = False,
+):
+    """Benchmark the explicit Surya evaluation path and persist per-stage timing artifacts."""
+    split = _validate_eval_cli_args(
+        split=split,
+        eval_fraction=eval_fraction,
+        eval_batch_size=1,
+        dataloader_num_workers=0,
+        max_rows=max_rows,
+    )
+    checkpoint_target = _normalize_metric_selector(metric)
+    if not 0 < max_vram_ratio <= 1.0:
+        raise typer.BadParameter("--max-vram-ratio must be in the interval (0, 1].")
+    parsed_candidate_eval_batch_sizes = _csv_to_int_list(candidate_eval_batch_sizes)
+    parsed_candidate_worker_counts = (
+        _csv_to_int_list(candidate_worker_counts) if candidate_worker_counts else None
+    )
+
+    resolved_output_dir = _resolve_tool_benchmark_output_dir(
+        run_dir=run_dir,
+        output_dir=output_dir,
+    )
+    if output_dir is None and _cli_is_rank_zero():
+        log.info("Resolved eval benchmark output_dir=%s", resolved_output_dir)
+
+    _apply_training_env_defaults()
+    _maybe_relaunch_multi_gpu_eval(multi_gpu=multi_gpu)
+
+    try:
+        summary = benchmark_surya_eval(
+            run_key=run_key,
+            run_dir=run_dir,
+            dataset_dir=dataset_dir,
+            split=split,
+            eval_fraction=eval_fraction,
+            eval_batch_size=parsed_candidate_eval_batch_sizes[0],
+            dataloader_num_workers=(
+                parsed_candidate_worker_counts[0] if parsed_candidate_worker_counts else 0
+            ),
+            max_rows=max_rows,
+            seed=seed,
+            checkpoint_target=checkpoint_target,
+            checkpoint_path=checkpoint_path,
+            output_dir=resolved_output_dir,
+            candidate_eval_batch_sizes=parsed_candidate_eval_batch_sizes,
+            candidate_worker_counts=parsed_candidate_worker_counts,
+            max_vram_ratio=max_vram_ratio,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        log.error("benchmark-surya-eval failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    if summary.get("status") == "completed_nonzero_rank":
+        return
+    selected = summary.get("selected_candidate") or {}
+    log.info(
+        "benchmark-surya-eval complete split=%s rows=%s winner=%s throughput=%s",
+        split,
+        summary.get("num_rows"),
+        selected.get("candidate", "n/a"),
+        (
+            f"{float(selected['samples_per_second']):.4f}"
+            if selected.get("samples_per_second") is not None
+            else "n/a"
+        ),
     )
 
 

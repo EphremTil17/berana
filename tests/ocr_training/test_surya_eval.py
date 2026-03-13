@@ -4,7 +4,11 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from modules.ocr_training.surya_eval import evaluate_surya_checkpoint, evaluate_surya_modalities
+from modules.ocr_training.surya_eval import (
+    evaluate_surya_checkpoint,
+    evaluate_surya_modalities,
+    evaluate_surya_rows,
+)
 from modules.ocr_training.surya_reports import (
     monitor_training_run,
     write_confusion_artifacts,
@@ -44,6 +48,10 @@ def test_evaluate_surya_checkpoint_batches_inference(tmp_path: Path):
             self.disable_tqdm = False
 
         def __call__(self, images, **kwargs):
+            assert all(
+                isinstance(image_boxes, list) and len(image_boxes) == 1 and len(image_boxes[0]) == 4
+                for image_boxes in kwargs["bboxes"]
+            )
             call_sizes.append(len(images))
             return [
                 SimpleNamespace(text_lines=[SimpleNamespace(text=f"text-{offset}")])
@@ -73,6 +81,106 @@ def test_evaluate_surya_checkpoint_batches_inference(tmp_path: Path):
     assert (run_dir / "tool_evaluation" / "predictions_holdout.jsonl").exists()
     assert (run_dir / "tool_evaluation" / "summary_holdout.json").exists()
     assert not (run_dir / "tool_evaluation" / "training_history.csv").exists()
+
+
+def test_evaluate_surya_checkpoint_logs_split_counts(tmp_path: Path, monkeypatch):
+    dataset_dir = tmp_path / "dataset"
+    run_dir = tmp_path / "run"
+    rows = []
+    for index in range(3):
+        image_path = dataset_dir / "images" / f"sample_{index}.png"
+        _write_png(image_path)
+        rows.append({"image": str(image_path), "text": f"text-{index}"})
+    _write_split(dataset_dir / "train.jsonl", rows)
+    _write_split(dataset_dir / "val.jsonl", rows[:2])
+    _write_split(dataset_dir / "holdout.jsonl", rows[:1])
+
+    logged_messages: list[str] = []
+
+    def _capture_info(message, *args, **kwargs):
+        logged_messages.append(message % args if args else message)
+
+    monkeypatch.setattr("modules.ocr_training.surya_eval.logger.info", _capture_info)
+
+    evaluate_surya_checkpoint(
+        run_key="fidel_typed_synthetic",
+        run_dir=run_dir,
+        dataset_dir=dataset_dir,
+        split="holdout",
+        eval_fraction=1.0,
+        eval_batch_size=1,
+        max_rows=None,
+        seed=42,
+        runtime={
+            "RecognitionPredictor": lambda _foundation: (
+                lambda images, **kwargs: [
+                    SimpleNamespace(text_lines=[SimpleNamespace(text="text-0")]) for _ in images
+                ]
+            ),
+            "TaskNames": SimpleNamespace(ocr_with_boxes="ocr"),
+        },
+        load_surya_eval_predictor=lambda runtime, run_dir: object(),
+    )
+
+    assert any(
+        "dataset_rows={train:3,val:2,holdout:1}" in message and "selected_rows=1" in message
+        for message in logged_messages
+    )
+
+
+def test_evaluate_surya_rows_barriers_after_rank_zero_writes(tmp_path: Path, monkeypatch):
+    run_dir = tmp_path / "run"
+    output_dir = run_dir / "tool_evaluation"
+    rows = [{"image": str(tmp_path / "fake.png"), "text": "hello"}]
+
+    barrier_calls: list[int] = []
+
+    def _fake_barrier(*, torch_module, context):
+        barrier_calls.append(int(context.rank))
+
+    monkeypatch.setattr("modules.ocr_training.surya_eval.maybe_barrier", _fake_barrier)
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_eval.run_surya_eval_batches",
+        lambda **kwargs: SimpleNamespace(
+            records=[
+                {
+                    "image": rows[0]["image"],
+                    "gt_text": "hello",
+                    "pred_text": "hello",
+                    "cer": 0.0,
+                    "wer": 0.0,
+                    "exact": True,
+                }
+            ],
+            world_size=2,
+            batch_timings=[],
+        ),
+    )
+
+    summary = evaluate_surya_rows(
+        run_key="fidel_typed_synthetic",
+        run_dir=run_dir,
+        rows=rows,
+        split="holdout",
+        eval_fraction=1.0,
+        max_rows=None,
+        eval_batch_size=1,
+        dataloader_num_workers=0,
+        seed=42,
+        modality=None,
+        predictor=object(),
+        runtime={"TaskNames": SimpleNamespace(ocr_with_boxes="ocr")},
+        distributed_context=SimpleNamespace(is_distributed=True, is_rank_zero=True, rank=0),
+        torch_module=None,
+        output_dir=output_dir,
+        register_stage=False,
+        include_predictions=False,
+        include_confusions=False,
+        include_report_bundle=False,
+    )
+
+    assert summary["num_rows"] == 1
+    assert barrier_calls == [0]
 
 
 def test_write_confusion_artifacts_outputs_top_pairs(tmp_path: Path):
@@ -474,7 +582,10 @@ def test_evaluate_surya_checkpoint_uses_seeded_sample_for_max_rows(tmp_path: Pat
         sampler_calls.append((len(sample_rows), max_rows, seed))
         return list(reversed(sample_rows))[:max_rows]
 
-    monkeypatch.setattr("modules.ocr_training.surya_eval.deterministic_sample_rows", _sample_rows)
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_eval_runtime.deterministic_sample_rows",
+        _sample_rows,
+    )
 
     class DummyPredictor:
         def __init__(self):
