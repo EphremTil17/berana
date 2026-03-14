@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import json
 from contextlib import suppress
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,10 @@ def _safe_save_training_bundle(
         return
     output_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(output_dir))
+    processor_module = getattr(processor.__class__, "__module__", "")
+    if processor_module.startswith("surya.common.surya.processor"):
+        _save_surya_processor_bundle(processor=processor, output_dir=output_dir, logger=logger)
+        return
     if hasattr(processor, "save_pretrained"):
         try:
             processor.save_pretrained(str(output_dir))
@@ -72,6 +77,36 @@ def _safe_save_training_bundle(
                 output_dir,
                 exc,
             )
+
+
+def _save_surya_processor_bundle(*, processor, output_dir: Path, logger) -> None:
+    """Persist the serializable Surya processor components without calling ProcessorMixin."""
+    tokenizer = getattr(processor, "ocr_tokenizer", None)
+    if hasattr(tokenizer, "save_pretrained"):
+        try:
+            tokenizer.save_pretrained(str(output_dir))
+        except Exception as exc:
+            logger.warning(
+                "Skipping Surya tokenizer.save_pretrained for %s due to serialization error: %s",
+                output_dir,
+                exc,
+            )
+    processor_meta = {
+        "schema_version": "1.0",
+        "processor_class": processor.__class__.__name__,
+        "processor_module": processor.__class__.__module__,
+        "patch_size": getattr(processor, "patch_size", None),
+        "merge_size": getattr(processor, "merge_size", None),
+        "num_register_tokens": getattr(processor, "num_register_tokens", None),
+        "num_beacon_tokens": getattr(processor, "num_beacon_tokens", None),
+        "beacon_token_interval": getattr(processor, "beacon_token_interval", None),
+        "blank_bbox_token_id": getattr(processor, "blank_bbox_token_id", None),
+        "tokenizer_class": tokenizer.__class__.__name__ if tokenizer is not None else None,
+    }
+    (output_dir / "surya_processor_meta.json").write_text(
+        json.dumps(processor_meta, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def _register_interrupted_training(

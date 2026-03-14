@@ -451,6 +451,46 @@ def test_safe_save_training_bundle_ignores_processor_serialization_errors(tmp_pa
     assert warnings
 
 
+def test_safe_save_training_bundle_uses_surya_specific_processor_bundle(tmp_path: Path):
+    saved: list[str] = []
+
+    class _Model:
+        def save_pretrained(self, output_dir):
+            saved.append(f"model:{output_dir}")
+
+    class _Tokenizer:
+        def save_pretrained(self, output_dir):
+            saved.append(f"tokenizer:{output_dir}")
+
+    surya_processor_cls = type(
+        "SuryaOCRProcessor",
+        (),
+        {
+            "__module__": "surya.common.surya.processor.__init__",
+            "__init__": lambda self: None,
+            "ocr_tokenizer": _Tokenizer(),
+            "patch_size": 14,
+            "merge_size": 2,
+            "num_register_tokens": 4,
+            "num_beacon_tokens": 0,
+            "beacon_token_interval": 0,
+            "blank_bbox_token_id": 123,
+        },
+    )
+
+    warnings: list[str] = []
+    _safe_save_training_bundle(
+        model=_Model(),
+        processor=surya_processor_cls(),
+        output_dir=tmp_path,
+        logger=SimpleNamespace(warning=lambda message, *args: warnings.append(message % args)),
+    )
+
+    assert saved == [f"model:{tmp_path}", f"tokenizer:{tmp_path}"]
+    assert (tmp_path / "surya_processor_meta.json").exists()
+    assert not warnings
+
+
 def test_run_training_candidate_marks_signal_stop_as_interrupted(tmp_path: Path, monkeypatch):
     torch_stub = SimpleNamespace(
         cuda=SimpleNamespace(
