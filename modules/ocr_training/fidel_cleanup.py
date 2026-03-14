@@ -9,6 +9,7 @@ from pathlib import Path
 
 from tqdm import tqdm
 
+from modules.ocr_training.failure_analysis import load_heuristic_exclusion_index
 from modules.ocr_training.schemas import SourceSnapshotRow
 from modules.ocr_training.surya_debug import audit_image_blankness
 
@@ -46,6 +47,12 @@ def _copy_or_link_file(source: Path, destination: Path) -> None:
         os.link(source, destination)
     except OSError:
         shutil.copy2(source, destination)
+
+
+def _safe_built_filename(sample_id: str, original_name: str) -> str:
+    """Mirror the build-stage dataset filename for one source row."""
+    safe_id = sample_id.replace(":", "__").replace("/", "_")
+    return f"{safe_id}__{Path(original_name).name}"
 
 
 def _copy_tree(source_root: Path, destination_root: Path) -> None:
@@ -118,11 +125,92 @@ def _build_excluded_row(*, row: SourceSnapshotRow) -> SourceSnapshotRow:
     )
 
 
+def _build_heuristic_excluded_row(
+    *,
+    row: SourceSnapshotRow,
+    categories: set[str],
+) -> SourceSnapshotRow:
+    """Create one excluded source snapshot row for heuristic analysis matches."""
+    ordered = ",".join(sorted(categories))
+    return row.model_copy(
+        update={
+            "excluded": True,
+            "excluded_reason": f"heuristic_exclusion_after_fidel_cleanup:{ordered}",
+        }
+    )
+
+
+def _update_cleanup_progress(
+    progress: tqdm,
+    *,
+    workers: int,
+    blank_excluded_rows: int,
+    heuristic_excluded_rows: int,
+    suspect_rows: int,
+) -> None:
+    """Refresh one cleanup progress bar postfix."""
+    progress.set_postfix(
+        {
+            "workers": workers,
+            "blank": blank_excluded_rows,
+            "heur": heuristic_excluded_rows,
+            "suspect": suspect_rows,
+        },
+        refresh=False,
+    )
+
+
+def _handle_blank_exclusion(
+    *,
+    row: SourceSnapshotRow,
+    source_image: Path,
+    cleaned_image: Path,
+    enriched: dict[str, object],
+    excluded_rows: list[dict[str, object]],
+    excluded_by_type: Counter[str],
+    excluded_dir: Path,
+    cleaned_rows: list[SourceSnapshotRow],
+) -> None:
+    """Exclude one confirmed blank row from the cleaned snapshot."""
+    excluded_rows.append(enriched)
+    excluded_by_type[row.normalized_type.value] += 1
+    _copy_or_link_file(source_image, excluded_dir / source_image.name)
+    if cleaned_image.exists():
+        cleaned_image.unlink()
+    cleaned_rows.append(_build_excluded_row(row=row))
+
+
+def _handle_heuristic_exclusion(
+    *,
+    row: SourceSnapshotRow,
+    source_image: Path,
+    cleaned_image: Path,
+    enriched: dict[str, object],
+    heuristic_categories: set[str],
+    excluded_rows: list[dict[str, object]],
+    heuristic_excluded_by_type: Counter[str],
+    heuristic_counts: Counter[str],
+    heuristic_dir: Path,
+    cleaned_rows: list[SourceSnapshotRow],
+) -> None:
+    """Exclude one row matched by the exact-false heuristic analysis bundle."""
+    enriched["heuristic_categories"] = sorted(heuristic_categories)
+    excluded_rows.append(enriched)
+    heuristic_excluded_by_type[row.normalized_type.value] += 1
+    for category in heuristic_categories:
+        heuristic_counts[category] += 1
+    _copy_or_link_file(source_image, heuristic_dir / source_image.name)
+    if cleaned_image.exists():
+        cleaned_image.unlink()
+    cleaned_rows.append(_build_heuristic_excluded_row(row=row, categories=heuristic_categories))
+
+
 def cleanup_fidel_extracted(
     *,
     extracted_root: Path,
     output_root: Path,
     workers: int = 8,
+    heuristic_cleanup_dir: Path | None = None,
 ) -> dict[str, object]:
     """Create one cleaned extracted-root copy and filtered source snapshot manifest."""
     snapshot_path = _snapshot_path_from_extracted_root(extracted_root)
@@ -134,10 +222,12 @@ def cleanup_fidel_extracted(
     cleaned_extracted_root = output_root / "extracted"
     review_root = output_root / "blank_cleanup_review"
     excluded_dir = output_root / "excluded_blank_images"
+    heuristic_dir = output_root / "excluded_heuristic_images"
     suspect_dir = output_root / "suspect_blank_images"
     cleaned_extracted_root.mkdir(parents=True, exist_ok=True)
     review_root.mkdir(parents=True, exist_ok=True)
     excluded_dir.mkdir(parents=True, exist_ok=True)
+    heuristic_dir.mkdir(parents=True, exist_ok=True)
     suspect_dir.mkdir(parents=True, exist_ok=True)
 
     _copy_tree(extracted_root, cleaned_extracted_root)
@@ -147,9 +237,18 @@ def cleanup_fidel_extracted(
     suspect_rows: list[dict[str, object]] = []
     counts_by_type: Counter[str] = Counter()
     excluded_by_type: Counter[str] = Counter()
+    heuristic_excluded_by_type: Counter[str] = Counter()
     suspect_by_type: Counter[str] = Counter()
+    blank_excluded_rows = 0
+    heuristic_excluded_rows = 0
     normalized_workers = max(1, int(workers))
     auditable_rows: list[tuple[SourceSnapshotRow, Path]] = []
+    heuristic_index = (
+        load_heuristic_exclusion_index(heuristic_cleanup_dir)
+        if heuristic_cleanup_dir is not None
+        else None
+    )
+    heuristic_counts: Counter[str] = Counter()
 
     for row in rows:
         if row.excluded or not row.image_relpath:
@@ -178,19 +277,49 @@ def cleanup_fidel_extracted(
             relative_image = source_image.relative_to(extracted_root.resolve())
             cleaned_image = cleaned_extracted_root / relative_image
             if audit["classification"] == "confirmed_blank" and row.text_normalized.strip():
-                excluded_rows.append(enriched)
-                excluded_by_type[row.normalized_type.value] += 1
-                _copy_or_link_file(source_image, excluded_dir / source_image.name)
-                if cleaned_image.exists():
-                    cleaned_image.unlink()
-                cleaned_rows.append(_build_excluded_row(row=row))
-                progress.set_postfix(
-                    {
-                        "workers": normalized_workers,
-                        "excluded": len(excluded_rows),
-                        "suspect": len(suspect_rows),
-                    },
-                    refresh=False,
+                _handle_blank_exclusion(
+                    row=row,
+                    source_image=source_image,
+                    cleaned_image=cleaned_image,
+                    enriched=enriched,
+                    excluded_rows=excluded_rows,
+                    excluded_by_type=excluded_by_type,
+                    excluded_dir=excluded_dir,
+                    cleaned_rows=cleaned_rows,
+                )
+                blank_excluded_rows += 1
+                _update_cleanup_progress(
+                    progress,
+                    workers=normalized_workers,
+                    blank_excluded_rows=blank_excluded_rows,
+                    heuristic_excluded_rows=heuristic_excluded_rows,
+                    suspect_rows=len(suspect_rows),
+                )
+                continue
+            built_name = _safe_built_filename(row.sample_id, row.original_filename)
+            heuristic_categories = (
+                heuristic_index["by_basename"].get(built_name, set()) if heuristic_index else set()
+            )
+            if heuristic_categories and row.text_normalized.strip():
+                _handle_heuristic_exclusion(
+                    row=row,
+                    source_image=source_image,
+                    cleaned_image=cleaned_image,
+                    enriched=enriched,
+                    heuristic_categories=heuristic_categories,
+                    excluded_rows=excluded_rows,
+                    heuristic_excluded_by_type=heuristic_excluded_by_type,
+                    heuristic_counts=heuristic_counts,
+                    heuristic_dir=heuristic_dir,
+                    cleaned_rows=cleaned_rows,
+                )
+                heuristic_excluded_rows += 1
+                _update_cleanup_progress(
+                    progress,
+                    workers=normalized_workers,
+                    blank_excluded_rows=blank_excluded_rows,
+                    heuristic_excluded_rows=heuristic_excluded_rows,
+                    suspect_rows=len(suspect_rows),
                 )
                 continue
             if audit["classification"] == "suspect_blank" and row.text_normalized.strip():
@@ -198,13 +327,12 @@ def cleanup_fidel_extracted(
                 suspect_by_type[row.normalized_type.value] += 1
                 _copy_or_link_file(source_image, suspect_dir / source_image.name)
             cleaned_rows.append(_build_cleaned_row(row=row, cleaned_image=cleaned_image))
-            progress.set_postfix(
-                {
-                    "workers": normalized_workers,
-                    "excluded": len(excluded_rows),
-                    "suspect": len(suspect_rows),
-                },
-                refresh=False,
+            _update_cleanup_progress(
+                progress,
+                workers=normalized_workers,
+                blank_excluded_rows=blank_excluded_rows,
+                heuristic_excluded_rows=heuristic_excluded_rows,
+                suspect_rows=len(suspect_rows),
             )
     finally:
         progress.close()
@@ -222,7 +350,14 @@ def cleanup_fidel_extracted(
                 "cleaned_extracted_root": str(cleaned_extracted_root),
                 "included_rows_by_type": dict(counts_by_type),
                 "excluded_rows": len(excluded_rows),
-                "excluded_rows_by_type": dict(excluded_by_type),
+                "blank_excluded_rows": blank_excluded_rows,
+                "blank_excluded_rows_by_type": dict(excluded_by_type),
+                "heuristic_cleanup_dir": str(heuristic_cleanup_dir)
+                if heuristic_cleanup_dir is not None
+                else None,
+                "heuristic_excluded_rows": heuristic_excluded_rows,
+                "heuristic_excluded_rows_by_type": dict(heuristic_excluded_by_type),
+                "heuristic_excluded_rows_by_category": dict(heuristic_counts),
                 "suspect_rows": len(suspect_rows),
                 "suspect_rows_by_type": dict(suspect_by_type),
             },
@@ -245,5 +380,8 @@ def cleanup_fidel_extracted(
     return {
         "cleaned_extracted_root": str(cleaned_extracted_root),
         "excluded_rows": len(excluded_rows),
+        "blank_excluded_rows": blank_excluded_rows,
         "suspect_rows": len(suspect_rows),
+        "heuristic_excluded_rows": heuristic_excluded_rows,
+        "heuristic_excluded_rows_by_category": dict(heuristic_counts),
     }

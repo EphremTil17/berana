@@ -6,7 +6,7 @@ from typing import Any
 from modules.ocr_training.schemas import TrainingCandidate
 from modules.ocr_training.surya_common import (
     bounded_worker_count,
-    resolve_save_eval_steps,
+    resolve_eval_save_steps,
 )
 
 
@@ -72,18 +72,19 @@ def build_training_arguments(
     """Build Hugging Face TrainingArguments for benchmark or full execution."""
     execution_backend = getattr(candidate, "execution_backend", None)
     execution_backend_value = getattr(execution_backend, "value", execution_backend)
-    metric_for_best_model = (
-        "eval_cer"
-        if candidate.metric_for_best_model.strip().lower() == "cer"
-        else candidate.metric_for_best_model
-    )
+    use_hf_best_metric = bool(candidate.load_best_model_at_end and eval_enabled)
+    metric_for_best_model = None
+    if use_hf_best_metric:
+        metric_for_best_model = (
+            "eval_cer"
+            if candidate.metric_for_best_model.strip().lower() == "cer"
+            else candidate.metric_for_best_model
+        )
     effective_eval_steps = None
     effective_save_steps = None
     if eval_enabled:
-        effective_eval_steps, effective_save_steps = resolve_save_eval_steps(
-            eval_steps=int(candidate.eval_steps),
-            save_steps=candidate.save_steps,
-            load_best_model_at_end=candidate.load_best_model_at_end and eval_enabled,
+        effective_eval_steps, effective_save_steps = resolve_eval_save_steps(
+            eval_save_steps=int(candidate.eval_steps),
             logger=logger,
         )
     elif save_enabled:
@@ -122,9 +123,9 @@ def build_training_arguments(
         "save_strategy": "steps" if save_enabled else "no",
         "save_steps": effective_save_steps if save_enabled else None,
         "save_total_limit": candidate.save_total_limit,
-        "load_best_model_at_end": candidate.load_best_model_at_end and eval_enabled,
-        "metric_for_best_model": metric_for_best_model if eval_enabled else None,
-        "greater_is_better": candidate.greater_is_better,
+        "load_best_model_at_end": use_hf_best_metric,
+        "metric_for_best_model": metric_for_best_model,
+        "greater_is_better": candidate.greater_is_better if use_hf_best_metric else None,
         "prediction_loss_only": eval_enabled and not compute_metrics_enabled,
         "remove_unused_columns": False,
         "logging_strategy": "steps",

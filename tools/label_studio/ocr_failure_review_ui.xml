@@ -1,0 +1,88 @@
+<View>
+  <Header
+    name="title"
+    value="OCR Failure Review"
+    style="color: #111111; margin-bottom: 4px; font-size: 20px;"
+  />
+  <View
+    style="padding: 6px 8px; margin-bottom: 6px; border: 1px solid #d0d0d0; background-color: #f5f5f5; color: #111111;"
+  >
+    <Text
+      name="meta_line"
+      style="color: #111111; font-weight: 600; margin-bottom: 2px; font-size: 13px;"
+      value="Task: $task_id | Modality: $modality | CER: $cer | WER: $wer | Sources: $candidate_sources"
+    />
+    <Text
+      name="meta_line_2"
+      style="color: #111111; font-size: 12px;"
+      value="Image: $image_path | Size: $image_width x $image_height | Blank audit: $classification / $structural_classification"
+    />
+  </View>
+
+  <View
+    style="margin-top: 2px; margin-bottom: 6px; padding: 2px; border: 1px solid #303030; background-color: #1f1f1f; min-height: 0; max-height: 300px; overflow: hidden;"
+  >
+    <Image name="image" value="$image" zoom="false" zoomControl="false" rotateControl="false" />
+  </View>
+
+  <View
+    style="margin-top: 4px; padding: 6px; border: 1px solid #2f2f2f; background-color: #202020; border-radius: 4px;"
+  >
+    <Header name="gt_header" value="Ground Truth" style="margin-bottom: 2px; font-size: 16px;" />
+    <Text name="gt_text_display" value="$gt_text" style="font-size: 13px; line-height: 1.3;" />
+  </View>
+
+  <View
+    style="margin-top: 6px; padding: 6px; border: 1px solid #2f2f2f; background-color: #202020; border-radius: 4px;"
+  >
+    <Header name="pred_header" value="Model Prediction" style="margin-bottom: 2px; font-size: 16px;" />
+    <Text name="pred_text_display" value="$pred_text" style="font-size: 13px; line-height: 1.3;" />
+  </View>
+
+  <View style="margin-top: 6px; padding: 6px; border: 1px solid #2f2f2f; background-color: #202020; border-radius: 4px;">
+    <Header name="audit_header" value="Audit Details" style="margin-bottom: 2px; font-size: 16px;" />
+    <Text
+      name="audit_text_display"
+      style="font-size: 13px; line-height: 1.3;"
+      value="GT length: $gt_len | Prediction length: $pred_len | Blank reasons: $blank_reasons"
+    />
+  </View>
+
+  <View style="display: flex; flex-direction: row; gap: 10px; align-items: flex-start; margin-top: 6px;">
+    <View
+      style="flex: 1; padding: 6px; border: 1px solid #2f2f2f; background-color: #202020; border-radius: 4px;"
+    >
+      <Header name="decision_header" value="Decision" style="margin-bottom: 2px; font-size: 16px;" />
+      <Choices name="review_decision" toName="image" choice="single" showInline="false">
+        <Choice value="exclude_label_mismatch" />
+        <Choice value="exclude_artifact_or_blank" />
+        <Choice value="keep_formatting_only" />
+        <Choice value="keep_valid_hard_example" />
+        <Choice value="needs_manual_followup" />
+      </Choices>
+    </View>
+    <View
+      style="flex: 1; padding: 6px; border: 1px solid #2f2f2f; background-color: #202020; border-radius: 4px;"
+    >
+      <Header name="correction_header" value="Correction / Notes" style="margin-bottom: 2px; font-size: 16px;" />
+      <TextArea
+        name="corrected_gt_text"
+        toName="image"
+        value="$corrected_gt_seed"
+        editable="true"
+        maxSubmissions="1"
+        rows="2"
+        placeholder="Optional corrected transcription"
+      />
+
+      <TextArea
+        name="review_notes"
+        toName="image"
+        editable="true"
+        maxSubmissions="1"
+        rows="3"
+        placeholder="Why is this row valid or invalid?"
+      />
+    </View>
+  </View>
+</View>

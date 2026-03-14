@@ -491,3 +491,126 @@ def test_build_surya_dataset_include_suspect_respects_pruned_review_folder():
         assert records[0]["text"] == "good"
     finally:
         shutil.rmtree(base)
+
+
+def test_cleanup_fidel_excludes_rows_from_heuristic_cleanup_dir():
+    base = Path(tempfile.mkdtemp(prefix="ocr_training_test_", dir=settings.BASE_DIR))
+    try:
+        extracted_root = base / "input" / "ocr_training" / "fidel" / "extracted"
+        manifests_root = (
+            base / "input" / "ocr_training" / "fidel" / "manifests" / "source_snapshots"
+        )
+        output_root = base / "input" / "ocr_training" / "fidel_cleaned"
+        dataset_output_root = base / "output" / "ocr_training_datasets"
+
+        good_img = extracted_root / "typed" / "good.png"
+        bad_img = extracted_root / "typed" / "bad.png"
+        _write_text_like_image(good_img)
+        _write_text_like_image(bad_img)
+        manifests_root.mkdir(parents=True, exist_ok=True)
+        (manifests_root / "fidel_sources.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "sample_id": "good:typed",
+                            "source_repo": "fidel_dataset",
+                            "source_split": "train",
+                            "original_filename": "good.png",
+                            "normalized_type": "typed",
+                            "text_raw": "good",
+                            "text_normalized": "good",
+                            "image_relpath": os.path.relpath(good_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "sample_id": "bad:typed",
+                            "source_repo": "fidel_dataset",
+                            "source_split": "train",
+                            "original_filename": "bad.png",
+                            "normalized_type": "typed",
+                            "text_raw": "bad",
+                            "text_normalized": "bad",
+                            "image_relpath": os.path.relpath(bad_img, Path.cwd()),
+                            "excluded": False,
+                            "excluded_reason": None,
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        heuristic_cleanup_dir = base / "heuristics" / "exact_false"
+        heuristic_cleanup_dir.mkdir(parents=True, exist_ok=True)
+        built_bad_name = "bad__typed__bad.png"
+        # sample_id bad:typed -> safe id bad__typed, final built name bad__typed__bad.png
+        (heuristic_cleanup_dir / "likely_label_mismatch_predictions.jsonl").write_text(
+            json.dumps(
+                {
+                    "image": str(
+                        base
+                        / "output"
+                        / "ocr_training_datasets"
+                        / "dummy"
+                        / "data"
+                        / "hf_dataset"
+                        / "images"
+                        / "train"
+                        / built_bad_name
+                    ),
+                    "gt_text": "bad",
+                    "pred_text": "wrong",
+                },
+                ensure_ascii=False,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        summary = cleanup_fidel_extracted(
+            extracted_root=extracted_root,
+            output_root=output_root,
+            workers=1,
+            heuristic_cleanup_dir=heuristic_cleanup_dir,
+        )
+
+        assert summary["heuristic_excluded_rows"] == 1
+        assert summary["heuristic_excluded_rows_by_category"]["likely_label_mismatch"] == 1
+
+        cleaned_snapshot = (
+            output_root / "manifests" / "source_snapshots" / "fidel_sources.jsonl"
+        ).read_text(encoding="utf-8")
+        assert "heuristic_exclusion_after_fidel_cleanup:likely_label_mismatch" in cleaned_snapshot
+
+        run_dir = build_surya_dataset(
+            extracted_root=output_root / "extracted",
+            output_root=dataset_output_root,
+            dataset_name="fidel_heuristic_cleaned_test",
+            split_config=SplitConfig(
+                train_ratio=0.5,
+                val_ratio=0.25,
+                holdout_ratio=0.25,
+                seed=42,
+                strict_page_isolation=False,
+            ),
+        )
+
+        records = []
+        hf_root = run_dir / "data" / "hf_dataset"
+        for split_name in ["train", "val", "holdout"]:
+            records.extend(
+                json.loads(line)
+                for line in (hf_root / f"{split_name}.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line
+            )
+        assert len(records) == 1
+        assert records[0]["text"] == "good"
+    finally:
+        shutil.rmtree(base)

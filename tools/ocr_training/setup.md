@@ -42,7 +42,7 @@ On Ubuntu or Ubuntu-based environments:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y build-essential g++ poppler-utils
+sudo apt-get install -y build-essential g++ poppler-utils nvtop python3.12-venv
 ```
 
 If CUDA 13.0 toolkit is missing:
@@ -99,12 +99,12 @@ The simplest current path is to download the source datasets directly from Huggi
 input/ocr_training/fidel/raw/
 ```
 
-If `huggingface-cli` is not already available after `setup.sh`, verify the environment first before installing anything else. In the normal repo setup it should already be installed through the pinned requirements.
+If `huggingface-cli` or `hf` is not already available after `setup.sh`, verify the environment first before installing anything else. In the normal repo setup it should already be installed through the pinned requirements.
 
 Login:
 
 ```bash
-huggingface-cli login
+hf auth login
 ```
 
 Create the raw directories:
@@ -117,13 +117,13 @@ mkdir -p input/ocr_training/fidel/raw/fidel_synthetic
 Download the two upstream datasets:
 
 ```bash
-huggingface-cli download upanzi/fidel-dataset \
+hf download upanzi/fidel-dataset \
   --repo-type dataset \
   --local-dir input/ocr_training/fidel/raw/fidel_dataset
 ```
 
 ```bash
-huggingface-cli download upanzi/Fidel-synthetic \
+hf download upanzi/Fidel-synthetic \
   --repo-type dataset \
   --local-dir input/ocr_training/fidel/raw/fidel_synthetic
 ```
@@ -157,6 +157,15 @@ Run cleanup on the extracted assets before building the Surya dataset:
 ```bash
 PYTHONPATH=. python tools/ocr_training.py cleanup-fidel \
   --extracted-root input/ocr_training/fidel/extracted \
+  --output-root input/ocr_training/fidel_cleaned \
+  --heuristic-cleanup-dir output/ocr_training_runs/<run>/fidel_full_surya_eval/predictions_train_analysis/exact_false
+```
+
+If you do not have a heuristic cleanup bundle yet, you can still run blank-only cleanup:
+
+```bash
+PYTHONPATH=. python tools/ocr_training.py cleanup-fidel \
+  --extracted-root input/ocr_training/fidel/extracted \
   --output-root input/ocr_training/fidel_cleaned
 ```
 
@@ -172,6 +181,7 @@ This creates:
 Important current behavior:
 
 - confirmed blanks are always excluded
+- when `--heuristic-cleanup-dir` is provided, rows matched by the heuristic review bundle are also excluded upstream
 - suspect rows are excluded by default at dataset build time
 - if you manually prune `suspect_blank_images/` and later pass `--include-suspect`, only the suspect review copies still left in that folder are re-included
 
@@ -268,9 +278,8 @@ PYTHONPATH=. python tools/ocr_training.py train-surya \
   --dataloader-num-workers 8 \
   --max-sequence-length 1024 \
   --no-gradient-checkpointing \
-  --eval-steps 100 \
+  --eval-save-steps 100 \
   --eval-max-rows 1000 \
-  --save-steps 500 \
   --resume none \
   --logging-steps 20 \
   --verbose-epochs \
@@ -278,6 +287,13 @@ PYTHONPATH=. python tools/ocr_training.py train-surya \
   --num-train-epochs 1 \
   --multi-gpu
 ```
+
+Notes:
+
+- Keep `--max-sequence-length 1024` for FIDEL. Inspection on this dataset showed `p95_tokens=865` and `max_tokens=902`, so `512` can truncate samples and trigger image-token/image-feature mismatch warnings during training.
+- The example above was tuned for `2x RTX 5090` with a `Ryzen 9 9950X`. Adjust batch size, eval batch size, worker count, and checkpointing for your hardware.
+- On a smaller GPU such as an `RTX 3060 Ti`, a safer starting point is `--per-device-train-batch-size 2` with gradient checkpointing enabled.
+- `--eval-save-steps` is the single cadence flag for validation OCR eval plus checkpoint saves.
 
 ## 12. What the Runtime Does Automatically
 
@@ -520,9 +536,8 @@ PYTHONPATH=. python tools/ocr_training.py train-surya \
   --dataloader-num-workers 8 \
   --max-sequence-length 1024 \
   --no-gradient-checkpointing \
-  --eval-steps 100 \
+  --eval-save-steps 100 \
   --eval-max-rows 1000 \
-  --save-steps 500 \
   --resume none \
   --logging-steps 20 \
   --verbose-epochs \

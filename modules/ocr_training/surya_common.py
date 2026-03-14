@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from math import ceil
 from pathlib import Path
 
 from config.settings import settings
@@ -163,31 +162,11 @@ def relative_to_base(path: Path) -> str:
         return str(path)
 
 
-def resolve_save_eval_steps(
-    *,
-    eval_steps: int,
-    save_steps: int,
-    load_best_model_at_end: bool,
-    logger,
-) -> tuple[int, int]:
-    """Return Trainer-safe eval/save step values for best-model loading."""
-    normalized_eval_steps = max(1, int(eval_steps))
-    normalized_save_steps = max(1, int(save_steps))
-    if not load_best_model_at_end:
-        return normalized_eval_steps, normalized_save_steps
-    if normalized_save_steps % normalized_eval_steps == 0:
-        return normalized_eval_steps, normalized_save_steps
-
-    multiplier = ceil(normalized_save_steps / normalized_eval_steps)
-    adjusted_save_steps = normalized_eval_steps * max(1, multiplier)
-    logger.warning(
-        "Adjusted save_steps from %d to %d to satisfy load_best_model_at_end "
-        "(multiple of eval_steps=%d).",
-        normalized_save_steps,
-        adjusted_save_steps,
-        normalized_eval_steps,
-    )
-    return normalized_eval_steps, adjusted_save_steps
+def resolve_eval_save_steps(*, eval_save_steps: int, logger) -> tuple[int, int]:
+    """Return one normalized cadence shared by checkpoint save and OCR evaluation."""
+    del logger
+    normalized_steps = max(1, int(eval_save_steps))
+    return normalized_steps, normalized_steps
 
 
 def bounded_worker_count(requested_workers: int) -> int:

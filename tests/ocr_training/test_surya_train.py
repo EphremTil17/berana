@@ -21,8 +21,8 @@ from modules.ocr_training.surya_common import (
     deterministic_sample_rows,
     infer_row_modality,
     infer_train_subset_bucket,
+    resolve_eval_save_steps,
     resolve_finetune_strategy,
-    resolve_save_eval_steps,
     subset_train_rows,
 )
 from modules.ocr_training.surya_model import find_lora_target_modules
@@ -34,37 +34,22 @@ from modules.ocr_training.surya_train import _prepare_train_and_val_rows
 from modules.ocr_training.surya_training_args import build_training_arguments
 
 
-def test_resolve_save_eval_steps_keeps_compatible_values():
-    eval_steps, save_steps = resolve_save_eval_steps(
-        eval_steps=500,
-        save_steps=1000,
-        load_best_model_at_end=True,
+def test_resolve_eval_save_steps_normalizes_shared_cadence():
+    eval_steps, save_steps = resolve_eval_save_steps(
+        eval_save_steps=500,
         logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
     )
     assert eval_steps == 500
-    assert save_steps == 1000
-
-
-def test_resolve_save_eval_steps_adjusts_incompatible_values():
-    eval_steps, save_steps = resolve_save_eval_steps(
-        eval_steps=2000,
-        save_steps=500,
-        load_best_model_at_end=True,
-        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
-    )
-    assert eval_steps == 2000
-    assert save_steps == 2000
-
-
-def test_resolve_save_eval_steps_no_best_model_mode():
-    eval_steps, save_steps = resolve_save_eval_steps(
-        eval_steps=2000,
-        save_steps=500,
-        load_best_model_at_end=False,
-        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
-    )
-    assert eval_steps == 2000
     assert save_steps == 500
+
+
+def test_resolve_eval_save_steps_requires_positive_values():
+    eval_steps, save_steps = resolve_eval_save_steps(
+        eval_save_steps=1,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+    assert eval_steps == 1
+    assert save_steps == 1
 
 
 def test_build_training_arguments_disables_eval_when_omitted_but_keeps_saving():
@@ -145,6 +130,84 @@ def test_build_training_arguments_sets_eval_batch_and_accumulation():
     assert args["per_device_eval_batch_size"] == 1
     assert args["eval_accumulation_steps"] == 1
     assert args["prediction_loss_only"] is False
+    assert args["save_steps"] == 500
+
+
+def test_build_training_arguments_omits_hf_best_metric_when_authoritative_eval_owns_selection():
+    candidate = SimpleNamespace(
+        metric_for_best_model="wer",
+        eval_steps=500,
+        save_steps=500,
+        load_best_model_at_end=False,
+        dataloader_num_workers=0,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=2,
+        dataloader_pin_memory=False,
+        dataloader_persistent_workers=False,
+        dataloader_prefetch_factor=2,
+        learning_rate=2e-5,
+        fp16=True,
+        gradient_checkpointing=False,
+        finetune_strategy=SimpleNamespace(value="lora"),
+        num_train_epochs=1,
+        save_total_limit=4,
+        greater_is_better=False,
+        logging_steps=20,
+    )
+
+    args = build_training_arguments(
+        training_arguments_cls=lambda **kwargs: kwargs,
+        output_dir=Path("/tmp/out"),
+        candidate=candidate,
+        eval_enabled=True,
+        save_enabled=True,
+        compute_metrics_enabled=False,
+        max_steps=None,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    assert args["load_best_model_at_end"] is False
+    assert args["metric_for_best_model"] is None
+    assert args["greater_is_better"] is None
+
+
+def test_build_training_arguments_aligns_save_steps_with_eval_steps_for_authoritative_eval():
+    candidate = SimpleNamespace(
+        metric_for_best_model="wer",
+        eval_steps=50,
+        save_steps=200,
+        load_best_model_at_end=False,
+        dataloader_num_workers=0,
+        per_device_train_batch_size=2,
+        per_device_eval_batch_size=8,
+        gradient_accumulation_steps=2,
+        dataloader_pin_memory=False,
+        dataloader_persistent_workers=False,
+        dataloader_prefetch_factor=2,
+        learning_rate=2e-5,
+        fp16=True,
+        gradient_checkpointing=False,
+        finetune_strategy=SimpleNamespace(value="lora"),
+        num_train_epochs=1,
+        save_total_limit=4,
+        greater_is_better=False,
+        logging_steps=20,
+    )
+
+    args = build_training_arguments(
+        training_arguments_cls=lambda **kwargs: kwargs,
+        output_dir=Path("/tmp/out"),
+        candidate=candidate,
+        eval_enabled=True,
+        save_enabled=True,
+        compute_metrics_enabled=False,
+        max_steps=None,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None),
+    )
+
+    assert args["eval_steps"] == 50
+    assert args["save_steps"] == 50
 
 
 def test_surya_train_config_allows_small_eval_subset():

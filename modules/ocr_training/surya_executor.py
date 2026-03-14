@@ -551,6 +551,7 @@ def run_training_candidate(  # noqa: C901
                 max_rows=config.eval_max_rows,
                 eval_batch_size=_training_args.per_device_eval_batch_size
                 or effective_candidate.per_device_train_batch_size,
+                dataloader_num_workers=int(config.dataloader_num_workers),
                 seed=int(config.seed),
                 modality=None,
                 predictor=predictor,

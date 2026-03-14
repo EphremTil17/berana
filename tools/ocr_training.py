@@ -456,6 +456,17 @@ def cli_cleanup_fidel(
         int,
         typer.Option("--workers", help="Bounded worker count for image audit during cleanup."),
     ] = 8,
+    heuristic_cleanup_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--heuristic-cleanup-dir",
+            "--heuristic-exact-false-dir",
+            help=(
+                "Optional heuristic cleanup directory from OCR failure analysis. "
+                "Matching rows are excluded upstream during cleanup."
+            ),
+        ),
+    ] = None,
 ):
     """Create one cleaned extracted-root copy and filtered source snapshot before dataset build."""
     try:
@@ -463,15 +474,19 @@ def cli_cleanup_fidel(
             extracted_root=extracted_root,
             output_root=output_root,
             workers=workers,
+            heuristic_cleanup_dir=heuristic_cleanup_dir,
         )
     except (FileNotFoundError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         log.error("cleanup-fidel failed: %s", exc)
         raise typer.Exit(code=1) from exc
 
     log.info(
-        "cleanup-fidel complete excluded=%d suspect=%d cleaned_extracted_root=%s",
+        "cleanup-fidel complete total_excluded=%d blank=%d heuristic=%d suspect=%d categories=%s cleaned_extracted_root=%s",
         summary["excluded_rows"],
+        summary["blank_excluded_rows"],
+        summary["heuristic_excluded_rows"],
         summary["suspect_rows"],
+        summary["heuristic_excluded_rows_by_category"],
         summary["cleaned_extracted_root"],
     )
 
@@ -608,9 +623,8 @@ def cli_train_surya(
     max_sequence_length: Annotated[int | None, typer.Option("--max-sequence-length")] = None,
     num_train_epochs: Annotated[float, typer.Option("--num-train-epochs")] = 8,
     learning_rate: Annotated[float, typer.Option("--learning-rate")] = 2e-5,
-    eval_steps: Annotated[int | None, typer.Option("--eval-steps")] = None,
+    eval_save_steps: Annotated[int | None, typer.Option("--eval-save-steps")] = None,
     logging_steps: Annotated[int, typer.Option("--logging-steps")] = 10,
-    save_steps: Annotated[int, typer.Option("--save-steps")] = 500,
     save_total_limit: Annotated[int, typer.Option("--save-total-limit")] = 4,
     load_best_model_at_end: Annotated[
         bool,
@@ -697,9 +711,8 @@ def cli_train_surya(
         max_sequence_length=max_sequence_length,
         num_train_epochs=num_train_epochs,
         learning_rate=learning_rate,
-        eval_steps=eval_steps,
+        eval_save_steps=eval_save_steps,
         logging_steps=logging_steps,
-        save_steps=save_steps,
         save_total_limit=save_total_limit,
         load_best_model_at_end=load_best_model_at_end,
         metric_for_best_model=metric_for_best_model,

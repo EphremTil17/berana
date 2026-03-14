@@ -31,6 +31,7 @@ The end-to-end flow is:
 
 1. Extract raw FIDEL assets.
 2. Run `cleanup-fidel` to produce a cleaned extracted tree and review buckets.
+   Optional: pass `--heuristic-cleanup-dir` to fold full-eval failure analysis exclusions into the cleaned snapshot before dataset build.
 3. Build the Surya dataset from the cleaned extracted tree.
 4. Optionally run `verify-surya-dataset` on the built `hf_dataset`.
 5. Inspect batch/token geometry if needed.
@@ -132,9 +133,8 @@ PYTHONPATH=. .venv/bin/python tools/ocr_training.py train-surya \
   --dataloader-num-workers 8 \
   --max-sequence-length 1024 \
   --no-gradient-checkpointing \
-  --eval-steps 100 \
+  --eval-save-steps 100 \
   --eval-max-rows 1000 \
-  --save-steps 500 \
   --resume none \
   --logging-steps 20 \
   --verbose-epochs \
@@ -147,6 +147,7 @@ Important notes:
 
 - `--multi-gpu` automatically relaunches under `torchrun`
 - allocator defaults now automatically enable `expandable_segments:True`
+- `--eval-save-steps` is the single cadence flag for validation OCR eval plus checkpoint saves
 - `--ram-spillover` is allowed by default
 - `--resume none` means start fresh even if that output directory already has checkpoints
 

@@ -149,3 +149,210 @@ def test_run_surya_finetune_barriers_before_destroy_on_interrupt(monkeypatch, tm
 
     assert result["status"] == "interrupted"
     assert calls == ["run", "barrier", "destroy"]
+
+
+def test_authoritative_eval_runner_forwards_dataloader_workers(monkeypatch, tmp_path: Path):
+    captured: dict[str, object] = {}
+
+    class _FakeModel:
+        pass
+
+    class _FakeProcessor:
+        pass
+
+    class _FakeTrainer:
+        def __init__(self, *args, **kwargs):
+            self.args = kwargs["args"]
+            self.callbacks = []
+
+        def add_callback(self, callback):
+            self.callbacks.append(callback)
+
+        def train(self, resume_from_checkpoint=None):
+            del resume_from_checkpoint
+            return None
+
+    class _FakeRecognitionPredictor:
+        def __init__(self, foundation_predictor):
+            self.foundation_predictor = foundation_predictor
+            self.disable_tqdm = False
+
+    class _FakeTrainingArguments:
+        def __init__(self, **kwargs):
+            self.__dict__.update(kwargs)
+
+    runtime = {
+        "torch": SimpleNamespace(
+            cuda=SimpleNamespace(
+                is_available=lambda: False,
+                synchronize=lambda: None,
+                empty_cache=lambda: None,
+                ipc_collect=lambda: None,
+            )
+        ),
+        "Trainer": _FakeTrainer,
+        "TrainingArguments": _FakeTrainingArguments,
+        "TaskNames": SimpleNamespace(ocr_with_boxes="ocr_with_boxes"),
+        "RecognitionPredictor": _FakeRecognitionPredictor,
+        "TrainerCallback": object,
+    }
+
+    candidate = SimpleNamespace(
+        per_device_train_batch_size=6,
+        per_device_eval_batch_size=24,
+        gradient_accumulation_steps=2,
+        dataloader_num_workers=0,
+        dataloader_pin_memory=False,
+        dataloader_persistent_workers=False,
+        dataloader_prefetch_factor=2,
+        learning_rate=1e-4,
+        fp16=False,
+        gradient_checkpointing=False,
+        finetune_strategy=SimpleNamespace(value="lora"),
+        num_train_epochs=1,
+        eval_steps=50,
+        save_steps=200,
+        save_total_limit=2,
+        load_best_model_at_end=True,
+        metric_for_best_model="wer",
+        greater_is_better=False,
+        logging_steps=20,
+        verbose_epochs=False,
+        allow_ram_spillover=True,
+        abort_vram_usage_ratio=0.95,
+        lora_rank=8,
+        lora_alpha=16,
+        lora_dropout=0.0,
+        execution_backend=SimpleNamespace(value="ddp"),
+        max_sequence_length=1024,
+        model_copy=lambda update: SimpleNamespace(**{**candidate.__dict__, **update}),
+        model_dump=lambda mode="json": {"candidate_id": "manual"},
+        candidate_id="manual",
+    )
+
+    config = SimpleNamespace(
+        eval_fraction=1.0,
+        eval_max_rows=2000,
+        seed=42,
+        resume="none",
+        train_fraction=0.05,
+        dataloader_num_workers=0,
+    )
+    config.model_copy = lambda update: SimpleNamespace(**{**config.__dict__, **update})
+
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.write_finetune_meta",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.load_finetune_meta",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.resolve_resume_checkpoint",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.LocalSuryaOCRDataset",
+        lambda **kwargs: kwargs["rows"],
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.SuryaOCRDataCollator",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.build_training_arguments",
+        lambda **kwargs: _FakeTrainingArguments(
+            output_dir=str(tmp_path / "run"),
+            per_device_eval_batch_size=24,
+        ),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.candidate_to_train_config",
+        lambda config, candidate: config,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor._attach_training_callbacks",
+        lambda **kwargs: captured.setdefault(
+            "authoritative_eval_runner", kwargs["authoritative_eval_runner"]
+        ),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor._resolve_effective_best_metric",
+        lambda **kwargs: (candidate, "eval_wer"),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.load_surya_eval_predictor",
+        lambda **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.evaluate_surya_rows",
+        lambda **kwargs: captured.setdefault("eval_kwargs", kwargs) or {"mean_cer": 0.1},
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor._safe_save_training_bundle",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.register_completed_finetune",
+        lambda **kwargs: {"status": "completed"},
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.write_training_report_bundle",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.write_resume_state",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.install_signal_handlers",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "modules.ocr_training.surya_executor.observe_training_stop",
+        lambda *args, **kwargs: None,
+    )
+
+    distributed_context = DistributedContext(
+        execution_backend="ddp",
+        ddp_backend="nccl",
+        is_distributed=True,
+        rank=0,
+        local_rank=0,
+        world_size=2,
+        device="cuda:0",
+        is_rank_zero=True,
+    )
+
+    from modules.ocr_training.surya_executor import run_training_candidate
+
+    run_training_candidate(
+        runtime=runtime,
+        run_key="run",
+        output_dir=tmp_path / "run",
+        config=config,
+        candidate=candidate,
+        base_checkpoint="checkpoint",
+        train_rows=[{"image": "a", "text": "x"}],
+        val_rows=[{"image": "b", "text": "y"}],
+        original_train_count=1,
+        attempts=[],
+        selection_reason="manual",
+        discarded_candidates=0,
+        retry_count=0,
+        planned_samples_per_second=None,
+        mode=TrainMode.MANUAL,
+        distributed_context=distributed_context,
+        load_surya_training_stack=lambda *args, **kwargs: (_FakeModel(), _FakeProcessor(), {}),
+        logger=SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None),
+        epoch_logging_callback_cls=lambda: object(),
+    )
+
+    authoritative_runner = captured["authoritative_eval_runner"]
+    authoritative_runner(
+        checkpoint_path=tmp_path / "run" / "checkpoint-200",
+        state=SimpleNamespace(global_step=200),
+    )
+
+    assert captured["eval_kwargs"]["dataloader_num_workers"] == 0

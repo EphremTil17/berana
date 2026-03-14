@@ -1,4 +1,5 @@
 import json
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -274,6 +275,8 @@ def test_write_training_history_artifacts_summary_includes_best_wer_and_fraction
     assert "train_fraction < 1.0" in summary["notes"][0]
     assert "best CER @20" in svg_text
     assert "best WER @40" in svg_text
+    assert "train_fraction &lt; 1.0" in svg_text
+    ET.fromstring(svg_text)
 
 
 def test_write_training_history_artifacts_summary_includes_plateau_warning(tmp_path: Path):

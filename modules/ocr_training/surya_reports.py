@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from collections import Counter, defaultdict, deque
+from html import escape as _xml_escape
 from pathlib import Path
 from typing import Any
 
@@ -170,16 +171,18 @@ def _render_chart_block(
     for marker in markers or []:
         step = float(marker.get("step", 0.0))
         x_pos = 40 + ((step - min_x) / x_span) * (width - 60)
+        marker_label = _xml_escape(str(marker.get("label", "marker")))
         marker_blocks.extend(
             [
                 f'<line x1="{x_pos:.1f}" y1="20" x2="{x_pos:.1f}" y2="{chart_height - 20}" stroke="{marker.get("color", "#666666")}" stroke-dasharray="4 3" />',
-                f'<text x="{min(x_pos + 4, width - 180):.1f}" y="34" font-size="10" font-family="monospace" fill="{marker.get("color", "#666666")}">{marker.get("label", "marker")}</text>',
+                f'<text x="{min(x_pos + 4, width - 180):.1f}" y="34" font-size="10" font-family="monospace" fill="{marker.get("color", "#666666")}">{marker_label}</text>',
             ]
         )
+    safe_title = _xml_escape(title)
     return "\n".join(
         [
             f'<g transform="translate(0,{offset_y})">',
-            f'<text x="20" y="16" font-size="14" font-family="monospace">{title}</text>',
+            f'<text x="20" y="16" font-size="14" font-family="monospace">{safe_title}</text>',
             f'<text x="20" y="{height - 6}" font-size="10" font-family="monospace">min={label_min:.4f} max={label_max:.4f}</text>',
             f'<rect x="40" y="20" width="{width - 60}" height="{chart_height - 40}" fill="none" stroke="#c9ced6" />',
             *marker_blocks,
@@ -620,7 +623,7 @@ def write_training_history_from_log_history(
                     '<rect width="100%" height="100%" fill="#ffffff" />',
                     '<rect x="10" y="10" width="940" height="96" fill="#f7f9fc" stroke="#c9ced6" />',
                     *[
-                        f'<text x="24" y="{36 + index * 18}" font-size="13" font-family="monospace">{line}</text>'
+                        f'<text x="24" y="{36 + index * 18}" font-size="13" font-family="monospace">{_xml_escape(str(line))}</text>'
                         for index, line in enumerate(summary_lines)
                     ],
                     *[block for block in blocks if block],

@@ -162,9 +162,8 @@ class SuryaTrainConfig(BaseModel):
     max_sequence_length: int | None = None
     num_train_epochs: int = 8
     learning_rate: float = 2e-5
-    eval_steps: int | None = None
+    eval_save_steps: int | None = None
     logging_steps: int = 10
-    save_steps: int = 500
     save_total_limit: int = 4
     load_best_model_at_end: bool = True
     metric_for_best_model: str = "cer"
@@ -224,6 +223,14 @@ class SuryaTrainConfig(BaseModel):
         """Require eval_max_rows to be positive when provided."""
         if value is not None and int(value) < 1:
             raise ValueError("eval_max_rows must be >= 1 when provided.")
+        return value
+
+    @field_validator("eval_save_steps")
+    @classmethod
+    def validate_eval_save_steps(cls, value: int | None) -> int | None:
+        """Require eval_save_steps to be positive when provided."""
+        if value is not None and int(value) < 1:
+            raise ValueError("eval_save_steps must be >= 1 when provided.")
         return value
 
 
