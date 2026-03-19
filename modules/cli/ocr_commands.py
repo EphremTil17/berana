@@ -3,6 +3,7 @@ from typing import Annotated
 
 import typer
 
+from modules.cli.common import ensure_source_exists, parse_page_selection
 from modules.cli.runtime import execute_pipeline
 from utils.logger import get_logger
 
@@ -96,51 +97,82 @@ def run_crop_columns(
 
 
 def run_ocr(
-    pdf_path: Annotated[str, typer.Option("--pdf-path", help="Path to the source PDF.")],
-    output_dir: str = typer.Option("output/ocr_runs/inference", "--output-dir"),
-    run_name: str = typer.Option("ocr_infer_v1", "--run-name"),
-    rectify_mode: str = typer.Option(
-        "rotate+homography", "--rectify-mode", help="Rectification style: rotate|rotate+homography"
-    ),
-    chunk_size: int = typer.Option(50, "--chunk-size"),
-    dpi: int = typer.Option(300, "--dpi"),
-    end_page: Annotated[
-        int | None,
+    source: Annotated[str, typer.Option("--source", help="Path to the source PDF or image.")],
+    checkpoint_dir: Annotated[
+        Path | None,
         typer.Option(
-            "--end-page",
-            help="Absolute last page number to process (inclusive).",
+            "--checkpoint-dir",
+            help="Surya fine-tune run directory or checkpoint-* directory. Required unless --zero-shot is set.",
         ),
     ] = None,
-    start_page: int = typer.Option(1, "--start-page", help="Page number to begin processing at."),
-    omit_pages: Annotated[
+    zero_shot: Annotated[
+        bool,
+        typer.Option(
+            "--zero-shot",
+            help="Run zero-shot Surya OCR instead of a fine-tuned checkpoint.",
+        ),
+    ] = False,
+    output_dir: Annotated[
+        Path,
+        typer.Option("--output-dir", help="Base output directory for OCR inference runs."),
+    ] = Path("output/ocr_runs/inference"),
+    pages: Annotated[
         str | None,
         typer.Option(
-            "--omit-pages", help="Pages to skip entirely. Use commas or ranges (e.g., '1,2,5-8')."
+            "--pages",
+            help="Optional page selection for PDFs. Supports commas and ranges (e.g., '1-5,7,10-12').",
         ),
     ] = None,
+    eval_batch_size: Annotated[
+        int,
+        typer.Option("--eval-batch-size", help="OCR inference batch size."),
+    ] = 1,
+    dataloader_num_workers: Annotated[
+        int,
+        typer.Option(
+            "--dataloader-num-workers",
+            help="Number of image-loading workers used during crop-layout OCR inference.",
+        ),
+    ] = 0,
+    diagnose: Annotated[
+        bool,
+        typer.Option(
+            "--diagnose",
+            help="Write annotated images showing the exact OCR boxes used for recognition.",
+        ),
+    ] = False,
 ) -> None:
-    """OCR command scaffold for the recognition stage."""
-    from modules.ocr_engine.orchestrator import run_ocr_inference_pipeline
+    """Run standalone Surya OCR inference on a PDF or image source."""
+    from modules.ocr_inference.pipeline import run_source_ocr_inference_pipeline
+
+    if zero_shot and checkpoint_dir is not None:
+        raise typer.BadParameter("Use either --zero-shot or --checkpoint-dir, not both.")
+    if not zero_shot and checkpoint_dir is None:
+        raise typer.BadParameter("Provide --checkpoint-dir or explicitly pass --zero-shot.")
+
+    source_path = ensure_source_exists(source, context_label="OCR inference failed")
+    selected_pages = parse_page_selection(pages)
 
     log.info(
-        "OCR command is scaffolded for now. "
-        "It records an inference manifest until recognition implementation lands."
+        "Starting OCR inference for %s in %s mode.",
+        source_path,
+        "zero-shot" if zero_shot else "checkpoint",
     )
-
-    execute_pipeline(
-        pdf_path=pdf_path,
-        pipeline_fn=run_ocr_inference_pipeline,
-        context_label="OCR scaffold failed",
-        success_msg="OCR scaffold ready. Manifest:",
-        omit_pages_raw=omit_pages,
-        output_dir=Path(output_dir),
-        run_name=run_name,
-        rectify_mode=rectify_mode,
-        chunk_size=chunk_size,
-        dpi=dpi,
-        start_page=start_page,
-        end_page=end_page,
-    )
+    try:
+        result = run_source_ocr_inference_pipeline(
+            source_path=source_path,
+            output_dir=output_dir,
+            checkpoint_dir=checkpoint_dir,
+            zero_shot=zero_shot,
+            eval_batch_size=eval_batch_size,
+            dataloader_num_workers=dataloader_num_workers,
+            diagnose=diagnose,
+            selected_pages=selected_pages or None,
+        )
+        log.info("✅ OCR inference complete. Output: %s", result)
+    except Exception as exc:
+        log.error("OCR inference failed: %s", exc)
+        raise typer.Exit(code=1) from exc
 
 
 def run_ocr_train(

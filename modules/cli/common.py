@@ -26,6 +26,14 @@ def parse_omit_pages(omit_pages: str | None) -> list[int]:
     return parsed
 
 
+def parse_page_selection(pages: str | None) -> list[int]:
+    """Parse comma/range page syntax into a sorted unique page list."""
+    parsed = parse_omit_pages(pages)
+    if not parsed:
+        return []
+    return sorted(set(parsed))
+
+
 def ensure_pdf_exists(pdf_path: str, context_label: str) -> Path:
     """Validate source PDF exists and return normalized path."""
     source_path = Path(pdf_path)
@@ -33,3 +41,12 @@ def ensure_pdf_exists(pdf_path: str, context_label: str) -> Path:
         log.error(f"{context_label}: Source PDF '{source_path}' does not exist.")
         raise typer.Exit(code=1)
     return source_path
+
+
+def ensure_source_exists(source_path: str, context_label: str) -> Path:
+    """Validate a generic OCR source exists and return normalized path."""
+    normalized = Path(source_path)
+    if not normalized.exists():
+        log.error(f"{context_label}: Source '{normalized}' does not exist.")
+        raise typer.Exit(code=1)
+    return normalized
