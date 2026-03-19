@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from modules.ocr_training.schemas import FinetuneStrategy, HardwareProfile
 
 MANUAL_DEFAULTS = {
@@ -18,7 +20,7 @@ def resolve_finetune_strategy(value: str | FinetuneStrategy) -> FinetuneStrategy
     return FinetuneStrategy(str(value).strip().lower())
 
 
-def resolve_strategy_allowlist(values: list[str | FinetuneStrategy]) -> list[FinetuneStrategy]:
+def resolve_strategy_allowlist(values: Sequence[str | FinetuneStrategy]) -> list[FinetuneStrategy]:
     """Normalize and de-duplicate a planner strategy allowlist."""
     normalized: list[FinetuneStrategy] = []
     for value in values:

@@ -2,8 +2,8 @@ import json
 
 from modules.ocr_benchmark.coverage import build_annotation_queue
 from modules.ocr_benchmark.dataset import write_manifest
-from schemas.ocr_benchmark import LineManifestRow
-from schemas.ocr_coverage import CoverageDeficit, CoverageReport
+from schemas.ocr_benchmark import ColumnKey, DatasetSplit, LangPrompt, LineManifestRow
+from schemas.ocr_coverage import CoverageDeficit, CoverageReport, CoverageTier
 
 
 def test_coverage_queue_prioritizes_deficit_hits(monkeypatch, tmp_path):
@@ -14,10 +14,10 @@ def test_coverage_queue_prioritizes_deficit_hits(monkeypatch, tmp_path):
                 line_id="L_labeled",
                 doc_stem="doc_q",
                 page_id="page_001",
-                column_key="geez",
-                lang_prompt="<gez>",
+                column_key=ColumnKey.GEEZ,
+                lang_prompt=LangPrompt.GEEZ,
                 image_path="output/ocr_benchmark/doc_q_v01/prep/images/page_001/geez/L_labeled.png",
-                split="holdout",
+                split=DatasetSplit.HOLDOUT,
                 gt_text="ሀ",
                 source_run_dir="output/ocr_benchmark/doc_q_v01",
             )
@@ -71,7 +71,13 @@ def test_coverage_queue_prioritizes_deficit_hits(monkeypatch, tmp_path):
         split_stats={},
         missing_chars=[],
         under_threshold=[
-            CoverageDeficit(tier="high", char="ሀ", count=0, min_required=20, deficit=20)
+            CoverageDeficit(
+                tier=CoverageTier.HIGH,
+                char="ሀ",
+                count=0,
+                min_required=20,
+                deficit=20,
+            )
         ],
         recommendations=[],
     )

@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import ClassVar
+from typing import Any, ClassVar
 
 # Define constants for log categorizations
 DEBUG = "DEBUG"
@@ -14,21 +14,46 @@ SUCCESS_LEVEL_NUM = 25  # Between INFO (20) and WARNING (30)
 logging.addLevelName(SUCCESS_LEVEL_NUM, SUCCESS)
 
 
-def success(self, message: str, *args, **kws) -> None:
-    """Custom log level for successful operations.
+class SuccessLogger:
+    """Typed wrapper around ``logging.Logger`` with a success helper."""
 
-    Args:
-        self: Logger instance.
-        message: Success message.
-        *args: Variable arguments.
-        **kws: Keyword arguments.
-    """
-    if self.isEnabledFor(SUCCESS_LEVEL_NUM):
-        # Yes, logger takes its '*args' as 'args'.
-        self._log(SUCCESS_LEVEL_NUM, message, args, **kws)
+    def __init__(self, logger: logging.Logger) -> None:
+        """Wrap a standard logger instance."""
+        self._logger = logger
 
+    def success(self, message: str, *args: Any, **kws: Any) -> None:
+        """Emit one success-level log message."""
+        if self._logger.isEnabledFor(SUCCESS_LEVEL_NUM):
+            self._logger.log(SUCCESS_LEVEL_NUM, message, *args, **kws)
 
-logging.Logger.success = success
+    def debug(self, msg: object, *args: Any, **kwargs: Any) -> None:
+        """Delegate debug logging."""
+        self._logger.debug(msg, *args, **kwargs)
+
+    def info(self, msg: object, *args: Any, **kwargs: Any) -> None:
+        """Delegate info logging."""
+        self._logger.info(msg, *args, **kwargs)
+
+    def warning(self, msg: object, *args: Any, **kwargs: Any) -> None:
+        """Delegate warning logging."""
+        self._logger.warning(msg, *args, **kwargs)
+
+    def error(self, msg: object, *args: Any, **kwargs: Any) -> None:
+        """Delegate error logging."""
+        self._logger.error(msg, *args, **kwargs)
+
+    def exception(self, msg: object, *args: Any, **kwargs: Any) -> None:
+        """Delegate exception logging."""
+        self._logger.exception(msg, *args, **kwargs)
+
+    @property
+    def handlers(self) -> list[logging.Handler]:
+        """Expose underlying handlers for initialization checks."""
+        return self._logger.handlers
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate unknown attributes to the underlying logger."""
+        return getattr(self._logger, name)
 
 
 # ANSI Color Codes (Simplest standard colors, no bold)
@@ -96,7 +121,7 @@ class CustomFormatter(logging.Formatter):
         return formatter.format(record)
 
 
-def get_logger(name="TranslateGemma"):
+def get_logger(name: str = "TranslateGemma") -> SuccessLogger:
     """Returns a modular logger instance."""
     logger = logging.getLogger(name)
 
@@ -114,7 +139,7 @@ def get_logger(name="TranslateGemma"):
         # Add ch to logger
         logger.addHandler(ch)
 
-    return logger
+    return SuccessLogger(logger)
 
 
 # Example usage:

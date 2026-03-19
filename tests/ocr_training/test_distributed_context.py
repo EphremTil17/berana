@@ -12,7 +12,13 @@ from modules.ocr_training.runtime.candidate_builder import (
     derive_auto_constraints,
 )
 from modules.ocr_training.runtime.hardware_profile import detect_hardware_profile
-from modules.ocr_training.schemas import HardwareProfile, SuryaTrainConfig, TrainMode
+from modules.ocr_training.schemas import (
+    ExecutionBackend,
+    FinetuneStrategy,
+    HardwareProfile,
+    SuryaTrainConfig,
+    TrainMode,
+)
 from modules.ocr_training.surya_artifacts import write_finetune_meta, write_hardware_profile
 
 
@@ -104,11 +110,11 @@ def test_build_training_candidates_tracks_world_size_in_global_batch():
     )
     config = SuryaTrainConfig(
         mode=TrainMode.AUTO,
-        execution_backend="ddp",
+        execution_backend=ExecutionBackend.DDP,
         distributed_world_size=2,
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
-        strategy_allowlist="qlora,lora",
+        strategy_allowlist=[FinetuneStrategy.QLORA, FinetuneStrategy.LORA],
     )
 
     constraints = derive_auto_constraints(config, profile)

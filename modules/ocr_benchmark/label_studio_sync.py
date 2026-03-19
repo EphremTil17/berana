@@ -10,7 +10,7 @@ from modules.ocr_benchmark.dataset import (
     validate_split_leakage,
     write_manifest,
 )
-from schemas.ocr_benchmark import DatasetSplit
+from schemas.ocr_benchmark import ColumnKey, DatasetSplit, LangPrompt
 from utils.logger import get_logger
 from utils.run_registry import load_latest_run, resolve_required_input
 
@@ -178,6 +178,21 @@ def _resolve_lang_prompt(lang: str | None) -> str | None:
     return None
 
 
+def _resolve_column_key(lang: str | None) -> ColumnKey | None:
+    if lang is None:
+        return None
+    if lang not in {"geez", "amharic"}:
+        return None
+    return ColumnKey(lang)
+
+
+def _resolve_lang_prompt_enum(lang: str | None) -> LangPrompt | None:
+    lang_prompt = _resolve_lang_prompt(lang)
+    if lang_prompt is None:
+        return None
+    return LangPrompt(lang_prompt)
+
+
 def _resolve_project_rel_image_path(image_url: str | None) -> str | None:
     if not image_url or "?d=" not in image_url:
         return None
@@ -195,7 +210,8 @@ def _parse_task_to_manifest_row(task: dict) -> LineManifestRow | None:
         return None
 
     lang = task_data.get("lang")
-    lang_prompt = _resolve_lang_prompt(lang)
+    column_key = _resolve_column_key(lang)
+    lang_prompt = _resolve_lang_prompt_enum(lang)
     if lang_prompt is None:
         if lang is None:
             return None
@@ -203,6 +219,8 @@ def _parse_task_to_manifest_row(task: dict) -> LineManifestRow | None:
             f"Unexpected language key found in Label Studio export: '{lang}'. "
             "Expected one of {'geez', 'amharic'}."
         )
+    if column_key is None:
+        return None
 
     project_rel_image_path = _resolve_project_rel_image_path(task_data.get("image"))
     if project_rel_image_path is None:
@@ -221,7 +239,7 @@ def _parse_task_to_manifest_row(task: dict) -> LineManifestRow | None:
         line_id=line_id,
         doc_stem=doc_stem,
         page_id=page_id,
-        column_key=lang,
+        column_key=column_key,
         lang_prompt=lang_prompt,
         image_path=project_rel_image_path,
         split=DatasetSplit(split_hint),

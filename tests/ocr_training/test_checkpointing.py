@@ -194,14 +194,14 @@ def test_plateau_warning_callback_warns_without_stopping(monkeypatch, tmp_path: 
     )()
 
     callback.on_evaluate(args, state, control, metrics={"eval_cer": 0.30, "eval_wer": 0.50})
-    state.global_step = 200
+    state.global_step = 200  # type: ignore[attr-defined]
     callback.on_evaluate(args, state, control, metrics={"eval_cer": 0.31, "eval_wer": 0.51})
-    state.global_step = 300
+    state.global_step = 300  # type: ignore[attr-defined]
     callback.on_evaluate(args, state, control, metrics={"eval_cer": 0.305, "eval_wer": 0.505})
-    state.global_step = 400
+    state.global_step = 400  # type: ignore[attr-defined]
     callback.on_evaluate(args, state, control, metrics={"eval_cer": 0.304, "eval_wer": 0.506})
 
-    assert control.should_training_stop is False
+    assert control.should_training_stop is False  # type: ignore[attr-defined]
     assert warnings
     assert "training_history.csv" in warnings[0]
     warnings_path = tmp_path / "evaluation" / "plateau_warnings.jsonl"
@@ -240,7 +240,7 @@ def test_plateau_warning_callback_warns_on_sustained_regression(monkeypatch, tmp
         (1000, 0.7436, 7.9194),
     ]
     for step, cer, wer in eval_points:
-        state.global_step = step
+        state.global_step = step  # type: ignore[attr-defined]
         callback.on_evaluate(args, state, control, metrics={"eval_cer": cer, "eval_wer": wer})
 
     assert warnings

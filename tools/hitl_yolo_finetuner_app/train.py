@@ -101,7 +101,7 @@ def _run_ultralytics_train(
     imgsz: int,
     tmp_dir: Path,
 ) -> Path:
-    model_instance = yolo_cls(model)
+    model_instance = yolo_cls(model)  # type: ignore[call-operator]
     log.info(
         "Training config | "
         f"model={model} epochs={epochs} batch={batch} imgsz={imgsz} "
@@ -171,7 +171,7 @@ def run_yolo_train(
     dataset_yaml = _resolve_dataset_yaml(latest_export, doc_stem)
 
     try:
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore[attr-defined]
     except ImportError as e:
         raise ImportError(
             "Ultralytics is not installed. Install via `pip install ultralytics` to run training."

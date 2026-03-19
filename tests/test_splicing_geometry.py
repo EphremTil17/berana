@@ -46,9 +46,9 @@ def test_affine_roundtrip():
 def test_homography_roundtrip():
     """Homography forward/inverse mapping should round-trip with tiny error."""
     # Create a simple perspective warp
-    src = np.float32([[0, 0], [100, 0], [100, 100], [0, 100]])
-    dst = np.float32([[10, 10], [90, 0], [110, 110], [0, 90]])
-    matrix = cv2.findHomography(src, dst)[0]
+    src = np.float32([[0, 0], [100, 0], [100, 100], [0, 100]])  # type: ignore[arg-type]
+    dst = np.float32([[10, 10], [90, 0], [110, 110], [0, 90]])  # type: ignore[arg-type]
+    matrix = cv2.findHomography(src, dst)[0]  # type: ignore[call-overload]
     transform = TransformMatrix(matrix=matrix)
 
     p_orig = Point2D(50, 50)

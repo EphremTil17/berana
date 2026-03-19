@@ -13,7 +13,7 @@ class LayoutSegmentationEngine:
 
     def __init__(self, model_path: str | Path | None = None):
         """Initialize the YOLO model from explicit path or best local fallback weights."""
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore[attr-defined]
 
         if model_path is None:
             # First try our tracked, organized model

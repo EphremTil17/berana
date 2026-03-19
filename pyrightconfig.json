@@ -1,0 +1,25 @@
+{
+  "include": [
+    "berana.py",
+    "config",
+    "evals",
+    "input",
+    "modules",
+    "schemas",
+    "tests",
+    "tools",
+    "utils"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    "**/.venv",
+    "**/.pytest_cache",
+    "**/node_modules",
+    "**/output"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "typeCheckingMode": "basic",
+  "reportMissingTypeStubs": false,
+  "pythonVersion": "3.12"
+}

@@ -16,7 +16,7 @@ from utils.logger import get_logger
 logger = get_logger("OCRTrainingCheckpointing")
 
 try:
-    from transformers import TrainerCallback as _TrainerCallback
+    from transformers import TrainerCallback as _TrainerCallback  # type: ignore[assignment]
 except Exception:  # pragma: no cover - runtime environments may not satisfy trainer deps.
 
     class _TrainerCallback:  # type: ignore[too-many-ancestors]

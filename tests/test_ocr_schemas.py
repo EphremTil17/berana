@@ -60,6 +60,8 @@ def test_page_layout_container():
         image_width=2000.0,
         image_height=3000.0,
         columns=[],
+        fallback_triggered=False,
+        uncertainty_score=0.0,
     )
     assert page.page_number == 1
     assert page.image_width == 2000.0

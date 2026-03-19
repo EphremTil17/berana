@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from modules.ocr_training.failure_review import create_failure_review_tasks
+from modules.ocr_training.failure_review import FailureReviewSummary, create_failure_review_tasks
 from utils.logger import get_logger
 
 app = typer.Typer(
@@ -34,7 +34,7 @@ def cli_make_ls_tasks(
     """Generate one Label Studio task JSON from OCR failure-analysis candidates."""
     resolved_output_dir = output_dir or exact_false_dir.parent / "label_studio"
     try:
-        summary = create_failure_review_tasks(
+        summary: FailureReviewSummary = create_failure_review_tasks(
             exact_false_dir=exact_false_dir,
             output_dir=resolved_output_dir,
         )

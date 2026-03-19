@@ -6,7 +6,7 @@ from urllib.request import Request, urlopen
 
 from modules.ocr_benchmark.dataset import read_manifest
 from modules.ocr_benchmark.metrics import normalize_ethiopic_text
-from schemas.ocr_coverage import CoverageTier, EthiopicCharsetConfig
+from schemas.ocr_coverage import CharsetTierConfig, CoverageTier, EthiopicCharsetConfig
 from utils.logger import get_logger
 
 logger = get_logger("OCRBenchmarkCharsetBuilder")
@@ -221,13 +221,18 @@ def generate_unicode_charset_config(
             "U+AB01..U+AB2F",
         ],
         tiers={
-            CoverageTier.HIGH: {"min_count": high_min_count, "chars": _unique_chars(high_chars)},
-            CoverageTier.MEDIUM: {
-                "min_count": medium_min_count,
-                "chars": _unique_chars(medium_chars),
-            },
-            CoverageTier.RARE: {"min_count": rare_min_count, "chars": _unique_chars(rare_chars)},
-            CoverageTier.OPTIONAL: {"min_count": 0, "chars": _unique_chars(optional_chars)},
+            CoverageTier.HIGH: CharsetTierConfig(
+                min_count=high_min_count, chars=_unique_chars(high_chars)
+            ),
+            CoverageTier.MEDIUM: CharsetTierConfig(
+                min_count=medium_min_count, chars=_unique_chars(medium_chars)
+            ),
+            CoverageTier.RARE: CharsetTierConfig(
+                min_count=rare_min_count, chars=_unique_chars(rare_chars)
+            ),
+            CoverageTier.OPTIONAL: CharsetTierConfig(
+                min_count=0, chars=_unique_chars(optional_chars)
+            ),
         },
         ignored_chars=DEFAULT_IGNORED_CHARS,
         normalization_profile="ethiopic_v1",

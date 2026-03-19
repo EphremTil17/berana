@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -16,6 +17,9 @@ from modules.ocr_training.runtime.telemetry import (
     _combined_peak_used_memory_mb,
 )
 from modules.ocr_training.schemas import SuryaTrainConfig
+
+if TYPE_CHECKING:
+    from modules.ocr_training.schemas import TrainingCandidate
 from modules.ocr_training.surya_artifacts import load_finetune_meta, write_finetune_meta
 from modules.ocr_training.surya_common import (
     deterministic_sample_rows,
@@ -78,7 +82,7 @@ def test_build_training_arguments_disables_eval_when_omitted_but_keeps_saving():
     args = build_training_arguments(
         training_arguments_cls=lambda **kwargs: kwargs,
         output_dir=Path("/tmp/out"),
-        candidate=candidate,
+        candidate=cast("TrainingCandidate", candidate),
         eval_enabled=False,
         save_enabled=True,
         compute_metrics_enabled=False,
@@ -119,7 +123,7 @@ def test_build_training_arguments_sets_eval_batch_and_accumulation():
     args = build_training_arguments(
         training_arguments_cls=lambda **kwargs: kwargs,
         output_dir=Path("/tmp/out"),
-        candidate=candidate,
+        candidate=cast("TrainingCandidate", candidate),
         eval_enabled=True,
         save_enabled=True,
         compute_metrics_enabled=True,
@@ -159,7 +163,7 @@ def test_build_training_arguments_omits_hf_best_metric_when_authoritative_eval_o
     args = build_training_arguments(
         training_arguments_cls=lambda **kwargs: kwargs,
         output_dir=Path("/tmp/out"),
-        candidate=candidate,
+        candidate=cast("TrainingCandidate", candidate),
         eval_enabled=True,
         save_enabled=True,
         compute_metrics_enabled=False,
@@ -198,7 +202,7 @@ def test_build_training_arguments_aligns_save_steps_with_eval_steps_for_authorit
     args = build_training_arguments(
         training_arguments_cls=lambda **kwargs: kwargs,
         output_dir=Path("/tmp/out"),
-        candidate=candidate,
+        candidate=cast("TrainingCandidate", candidate),
         eval_enabled=True,
         save_enabled=True,
         compute_metrics_enabled=False,
@@ -284,6 +288,7 @@ def test_compute_metrics_factory_uses_surya_ocr_tokenizer():
 
     processor = SimpleNamespace(ocr_tokenizer=_Tokenizer(), pad_token_id=0)
     compute_metrics = compute_metrics_factory(processor)
+    assert compute_metrics is not None
 
     metrics = compute_metrics(
         SimpleNamespace(
@@ -310,6 +315,7 @@ def test_compute_metrics_factory_normalizes_negative_unsigned_like_labels():
 
     processor = SimpleNamespace(ocr_tokenizer=_Tokenizer(), pad_token_id=0)
     compute_metrics = compute_metrics_factory(processor)
+    assert compute_metrics is not None
 
     metrics = compute_metrics(
         SimpleNamespace(
@@ -336,6 +342,7 @@ def test_compute_metrics_factory_normalizes_negative_prediction_ids():
 
     processor = SimpleNamespace(ocr_tokenizer=_Tokenizer(), pad_token_id=0)
     compute_metrics = compute_metrics_factory(processor)
+    assert compute_metrics is not None
 
     metrics = compute_metrics(
         SimpleNamespace(

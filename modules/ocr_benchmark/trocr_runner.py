@@ -66,7 +66,7 @@ def run_zero_shot_baseline(doc_stem: str, split: str = "all") -> Path:
         TROCR_STAGE1_CHECKPOINT,
     )
     processor = TrOCRProcessor.from_pretrained(TROCR_STAGE1_CHECKPOINT)
-    model = VisionEncoderDecoderModel.from_pretrained(TROCR_STAGE1_CHECKPOINT).to(device)
+    model = VisionEncoderDecoderModel.from_pretrained(TROCR_STAGE1_CHECKPOINT).to(device)  # type: ignore[assignment]
     model.eval()
 
     predictions = []
@@ -87,9 +87,9 @@ def run_zero_shot_baseline(doc_stem: str, split: str = "all") -> Path:
             continue
 
         try:
-            pixel_values = processor(images=img, return_tensors="pt").pixel_values.to(device)
+            pixel_values = processor(images=img, return_tensors="pt").pixel_values.to(device)  # type: ignore[attr-defined]
             with torch.no_grad():
-                generated_ids = model.generate(
+                generated_ids = model.generate(  # type: ignore[call-overload]
                     pixel_values,
                     max_new_tokens=128,
                     do_sample=False,

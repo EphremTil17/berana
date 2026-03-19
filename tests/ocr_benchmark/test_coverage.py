@@ -5,7 +5,7 @@ import pytest
 
 from modules.ocr_benchmark.coverage import build_coverage_report, ensure_coverage_gate
 from modules.ocr_benchmark.dataset import write_manifest
-from schemas.ocr_benchmark import LineManifestRow
+from schemas.ocr_benchmark import ColumnKey, DatasetSplit, LangPrompt, LineManifestRow
 
 
 def _manifest_rows() -> list[LineManifestRow]:
@@ -14,10 +14,10 @@ def _manifest_rows() -> list[LineManifestRow]:
             line_id="L001",
             doc_stem="doc_cov",
             page_id="page_001",
-            column_key="geez",
-            lang_prompt="<gez>",
+            column_key=ColumnKey.GEEZ,
+            lang_prompt=LangPrompt.GEEZ,
             image_path="output/ocr_benchmark/doc_cov_v01/prep/images/page_001/geez/L001.png",
-            split="train",
+            split=DatasetSplit.TRAIN,
             gt_text="ሀለመ",
             source_run_dir="output/ocr_benchmark/doc_cov_v01",
         ),
@@ -25,10 +25,10 @@ def _manifest_rows() -> list[LineManifestRow]:
             line_id="L002",
             doc_stem="doc_cov",
             page_id="page_002",
-            column_key="amharic",
-            lang_prompt="<amh>",
+            column_key=ColumnKey.AMHARIC,
+            lang_prompt=LangPrompt.AMHARIC,
             image_path="output/ocr_benchmark/doc_cov_v01/prep/images/page_002/amharic/L002.png",
-            split="holdout",
+            split=DatasetSplit.HOLDOUT,
             gt_text="በተነ",
             source_run_dir="output/ocr_benchmark/doc_cov_v01",
         ),

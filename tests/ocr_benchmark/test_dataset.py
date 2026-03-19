@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from modules.ocr_benchmark.dataset import read_manifest, validate_split_leakage, write_manifest
-from schemas.ocr_benchmark import DatasetSplit, LineManifestRow
+from schemas.ocr_benchmark import ColumnKey, DatasetSplit, LangPrompt, LineManifestRow
 
 
 def mock_row(line_id: str, split: DatasetSplit, page_id: str = "page_01") -> LineManifestRow:
@@ -12,8 +12,8 @@ def mock_row(line_id: str, split: DatasetSplit, page_id: str = "page_01") -> Lin
         line_id=line_id,
         doc_stem="doc_001",
         page_id=page_id,
-        column_key="geez",
-        lang_prompt="<gez>",
+        column_key=ColumnKey.GEEZ,
+        lang_prompt=LangPrompt.GEEZ,
         image_path=f"output/images/{line_id}.png",
         split=split,
         source_run_dir="/run01",

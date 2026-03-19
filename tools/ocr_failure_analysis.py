@@ -5,7 +5,10 @@ from typing import Annotated
 
 import typer
 
-from modules.ocr_training.failure_analysis import analyze_predictions_failures
+from modules.ocr_training.failure_analysis import (
+    FailureAnalysisSummary,
+    analyze_predictions_failures,
+)
 from utils.logger import get_logger
 
 app = typer.Typer(add_completion=False, help="Dedicated OCR failure analysis tools.")
@@ -31,7 +34,7 @@ def cli_analyze_surya_predictions(
         output_dir or predictions_path.parent / f"{predictions_path.stem}_analysis"
     )
     try:
-        summary = analyze_predictions_failures(
+        summary: FailureAnalysisSummary = analyze_predictions_failures(
             predictions_path=predictions_path,
             output_dir=resolved_output_dir,
         )

@@ -18,6 +18,7 @@ from modules.ocr_training.checkpointing import (
     resolve_latest_checkpoint,
     write_resume_state,
 )
+from modules.ocr_training.distributed.context import DistributedContext
 from modules.ocr_training.runtime.telemetry import (
     BenchmarkTelemetryCallback,
     ThroughputGuardCallback,
@@ -82,7 +83,7 @@ def _safe_save_training_bundle(
 def _save_surya_processor_bundle(*, processor, output_dir: Path, logger) -> None:
     """Persist the serializable Surya processor components without calling ProcessorMixin."""
     tokenizer = getattr(processor, "ocr_tokenizer", None)
-    if hasattr(tokenizer, "save_pretrained"):
+    if tokenizer is not None and hasattr(tokenizer, "save_pretrained"):
         try:
             tokenizer.save_pretrained(str(output_dir))
         except Exception as exc:
@@ -220,6 +221,8 @@ def _attach_training_callbacks(
     trainer_args = getattr(trainer, "args", None)
     if trainer_args is None:
         trainer_args = getattr(trainer, "kwargs", {}).get("args")
+    if trainer_args is None:
+        raise ValueError("Could not determine trainer output_dir: trainer.args is None")
     trainer_output_dir = Path(str(trainer_args.output_dir))
 
     def _request_runtime_stop(message: str) -> None:
@@ -455,7 +458,7 @@ def run_training_candidate(  # noqa: C901
     retry_count: int,
     planned_samples_per_second: float | None,
     mode: TrainMode,
-    distributed_context=None,
+    distributed_context: DistributedContext | None = None,
     load_surya_training_stack,
     logger,
     epoch_logging_callback_cls,
@@ -463,11 +466,16 @@ def run_training_candidate(  # noqa: C901
     """Execute one selected candidate as the real training run."""
     torch = runtime["torch"]
     if distributed_context is None:
-        distributed_context = type(
-            "_SingleProcessContext",
-            (),
-            {"is_rank_zero": True, "is_distributed": False},
-        )()
+        distributed_context = DistributedContext(
+            execution_backend="single",
+            ddp_backend=None,
+            is_distributed=False,
+            rank=0,
+            local_rank=0,
+            world_size=1,
+            device="cuda:0" if torch.cuda.is_available() else "cpu",
+            is_rank_zero=True,
+        )
     if torch.cuda.is_available():
         with suppress(Exception):
             torch.cuda.synchronize()

@@ -1,6 +1,6 @@
 # OCR Training Tooling
 
-This directory documents the OCR training workflow implemented by [`tools/ocr_training.py`](/workspace/berana/tools/ocr_training.py) and the supporting runtime under [`modules/ocr_training/`](/workspace/berana/modules/ocr_training).
+This directory documents the OCR training workflow implemented by [`tools/ocr_training.py`](../ocr_training.py) and the supporting runtime under `modules/ocr_training/`.
 
 The current system is built around:
 
@@ -12,7 +12,12 @@ The current system is built around:
 - live run monitoring artifacts written during training
 - automatic final report generation on completion or interrupt
 
-If you need environment setup from scratch, read [setup.md](/workspace/berana/tools/ocr_training/setup.md).
+If you need environment setup from scratch, read [setup.md](./setup.md).
+
+Related docs:
+
+- root project overview: [../../README.md](../../README.md)
+- OCR training setup and canonical command guide: [setup.md](./setup.md)
 
 ## Design Goals
 
@@ -479,10 +484,10 @@ Preferred order:
 
 ## Files To Know
 
-- CLI: [`tools/ocr_training.py`](/workspace/berana/tools/ocr_training.py)
-- setup guide: [setup.md](/workspace/berana/tools/ocr_training/setup.md)
-- executor/runtime: [`modules/ocr_training/surya_executor.py`](/workspace/berana/modules/ocr_training/surya_executor.py)
-- reporting: [`modules/ocr_training/surya_reports.py`](/workspace/berana/modules/ocr_training/surya_reports.py)
-- checkpointing callbacks: [`modules/ocr_training/checkpointing.py`](/workspace/berana/modules/ocr_training/checkpointing.py)
-- train wrapper: [`modules/ocr_training/surya_train.py`](/workspace/berana/modules/ocr_training/surya_train.py)
-- explicit evaluation: [`modules/ocr_training/surya_eval.py`](/workspace/berana/modules/ocr_training/surya_eval.py)
+- CLI: [`tools/ocr_training.py`](../ocr_training.py)
+- setup guide: [setup.md](./setup.md)
+- executor/runtime: [`modules/ocr_training/surya_executor.py`](../../modules/ocr_training/surya_executor.py)
+- reporting: [`modules/ocr_training/surya_reports.py`](../../modules/ocr_training/surya_reports.py)
+- checkpointing callbacks: [`modules/ocr_training/checkpointing.py`](../../modules/ocr_training/checkpointing.py)
+- train wrapper: [`modules/ocr_training/surya_train.py`](../../modules/ocr_training/surya_train.py)
+- explicit evaluation: [`modules/ocr_training/surya_eval.py`](../../modules/ocr_training/surya_eval.py)

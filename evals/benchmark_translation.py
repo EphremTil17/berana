@@ -1,6 +1,7 @@
 import json
 import time
 from pathlib import Path
+from typing import TypedDict, cast
 
 from huggingface_hub import hf_hub_download
 from llama_cpp import Llama
@@ -9,6 +10,35 @@ from config.settings import settings
 from utils.logger import get_logger
 
 log = get_logger("Benchmark")
+
+
+class LlamaChoice(TypedDict):
+    """One completion choice returned by llama-cpp."""
+
+    text: str
+
+
+class LlamaUsage(TypedDict):
+    """Token accounting emitted by llama-cpp."""
+
+    completion_tokens: int
+
+
+class LlamaCompletionOutput(TypedDict):
+    """Subset of llama-cpp completion payload used by the benchmark."""
+
+    choices: list[LlamaChoice]
+    usage: LlamaUsage
+
+
+def _extract_translated_text(output: LlamaCompletionOutput) -> str:
+    """Return the first completion text with the existing trimming behavior."""
+    return output["choices"][0]["text"].strip()
+
+
+def _extract_completion_tokens(output: LlamaCompletionOutput) -> int:
+    """Return the token count used for throughput reporting."""
+    return output["usage"]["completion_tokens"]
 
 
 def download_model(repo_id: str, filename: str) -> Path:
@@ -163,7 +193,8 @@ def run_benchmark(
         )
         end_time = time.time()
 
-        translated_text = output["choices"][0]["text"].strip()
+        typed_output = cast(LlamaCompletionOutput, output)
+        translated_text = _extract_translated_text(typed_output)
 
         # Post-processing: Remove any potential model-hallucinated headers from the start
         noise_prefixes = [
@@ -178,7 +209,7 @@ def run_benchmark(
                 translated_text = translated_text[len(prefix) :].strip()
 
         duration = end_time - start_time
-        tokens = output["usage"]["completion_tokens"]
+        tokens = _extract_completion_tokens(typed_output)
         tps = tokens / duration if duration > 0 else 0
 
         log.success(f"Translation of {filename} complete in {duration:.2f}s ({tps:.2f} tokens/s)")

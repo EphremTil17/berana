@@ -233,6 +233,30 @@ class SuryaTrainConfig(BaseModel):
             raise ValueError("eval_save_steps must be >= 1 when provided.")
         return value
 
+    @field_validator("execution_backend", mode="before")
+    @classmethod
+    def normalize_execution_backend(
+        cls, value: str | ExecutionBackend | None
+    ) -> ExecutionBackend | None:
+        """Normalize execution_backend from string to enum."""
+        if value is None:
+            return None
+        if isinstance(value, ExecutionBackend):
+            return value
+        return ExecutionBackend(str(value).strip().lower())
+
+    @field_validator("finetune_strategy", mode="before")
+    @classmethod
+    def normalize_finetune_strategy(
+        cls, value: str | FinetuneStrategy | None
+    ) -> FinetuneStrategy | None:
+        """Normalize finetune_strategy from string to enum."""
+        if value is None:
+            return None
+        if isinstance(value, FinetuneStrategy):
+            return value
+        return FinetuneStrategy(str(value).strip().lower())
+
 
 class HardwareProfile(BaseModel):
     """Normalized single-host hardware profile used by the adaptive planner."""

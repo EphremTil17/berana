@@ -215,3 +215,20 @@ Range commits: `7739798`, `4adb40a`, `32b716a`, `f126456`, `fc3e0c6`
 
 ### Removed
 - **Legacy Test Locations**: Removed top-level `tests/test_hitl_yolo_finetuner_{export,geometry,train}.py` in favor of `tests/hitl/`.
+
+## [0.13.0 - 0.15.0] - 2026-03-10 to 2026-03-15
+
+### Added
+- **Standalone Surya OCR Inference**: Promoted `berana.py ocr` from a manifest scaffold into a real inference path with PDF/image `--source` input, page-range selection, checkpoint-first loading, zero-shot fallback, and diagnosis overlays that visualize the exact OCR boxes used for recognition.
+- **OCR Training Runtime Expansion**: Added dedicated Surya training capabilities around blank cleanup, heuristic cleanup integration, explicit checkpoint evaluation, modality-specific evaluation, GPU eval benchmarking, plateau telemetry, and persistent best-checkpoint artifacts.
+- **Failure Analysis & Review Workflow**: Added OCR failure analysis and Label Studio review generation utilities for exact-false inspection, outlier detection, blank-image auditing, and heuristic exclusion loops back into dataset cleanup.
+
+### Changed
+- **README Synchronization**: Updated the root README and OCR training docs to reflect the current active OCR inference and training surfaces, with proper linkage to dedicated tool documentation instead of stale scaffold descriptions.
+- **Training Cadence & Evaluation Semantics**: Consolidated checkpoint-save and authoritative eval cadence around `--eval-save-steps`, switched training CER/WER reporting to the explicit Surya checkpoint-eval path, and hardened emergency checkpoint persistence for interrupted runs.
+- **Type Safety and Static Analysis**: Introduced `pyrightconfig.json`, strengthened TypedDict and enum boundaries across OCR training and benchmark modules, replaced internal suppressions with validated parsing/helpers, and brought `pyright`, `ruff check`, and `ruff format --check` back to green.
+
+### Fixed
+- **Surya Multi-GPU Reliability**: Hardened interruption handling, distributed teardown, resume-state writing, and emergency checkpoint persistence so multi-GPU training and evaluation failure paths leave cleaner artifacts and safer restart points.
+- **OCR Inference Diagnostics**: Corrected diagnose-mode annotations so they reflect the actual OCR boxes used by the recognition path rather than a misleading detector-only overlay.
+- **Dataset Hygiene Pipeline**: Fixed missing-argument drift between training-time evaluation callbacks and explicit evaluation helpers, and tightened cleanup/build behavior around suspect rows, heuristic exclusions, and verified blank-image handling.

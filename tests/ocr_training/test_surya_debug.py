@@ -1,12 +1,42 @@
 import json
 import os
 from pathlib import Path
+from typing import TypedDict, cast
 
 from PIL import Image, ImageDraw
 
 from modules.ocr_training.fidel_cleanup import cleanup_fidel_extracted
 from modules.ocr_training.surya_cleanup import verify_surya_dataset
 from modules.ocr_training.surya_debug import BLANK_SIGNATURE_SIZE, extract_exact_false_debug_bundle
+
+
+class _CategorySummary(TypedDict):
+    num_rows: int
+
+
+class _SignalOverlap(TypedDict):
+    structural_only: int
+
+
+class _ExactFalseSummary(TypedDict):
+    num_rows: int
+    signal_overlap: _SignalOverlap
+
+
+class _DebugBundleSummary(TypedDict):
+    exact_false: _ExactFalseSummary
+    confirmed_blank: _CategorySummary
+    suspect_blank: _CategorySummary
+    original_summary: _CategorySummary
+    summary_excluding_confirmed_blank: _CategorySummary
+
+
+class _FidelCleanupSummary(TypedDict):
+    excluded_rows: int
+
+
+class _SuryaVerifySummary(TypedDict):
+    confirmed_blank_rows: int
 
 
 def _write_predictions(path: Path, rows: list[dict[str, object]]) -> None:
@@ -72,9 +102,12 @@ def test_extract_exact_false_debug_bundle_writes_confirmed_and_suspect_artifacts
         ],
     )
 
-    summary = extract_exact_false_debug_bundle(
-        predictions_path=predictions_path,
-        output_dir=tmp_path / "debug",
+    summary = cast(
+        _DebugBundleSummary,
+        extract_exact_false_debug_bundle(
+            predictions_path=predictions_path,
+            output_dir=tmp_path / "debug",
+        ),
     )
 
     assert summary["exact_false"]["num_rows"] == 2
@@ -110,9 +143,12 @@ def test_extract_exact_false_debug_bundle_requires_signature_for_confirmed_blank
         ],
     )
 
-    summary = extract_exact_false_debug_bundle(
-        predictions_path=predictions_path,
-        output_dir=tmp_path / "debug",
+    summary = cast(
+        _DebugBundleSummary,
+        extract_exact_false_debug_bundle(
+            predictions_path=predictions_path,
+            output_dir=tmp_path / "debug",
+        ),
     )
 
     assert summary["confirmed_blank"]["num_rows"] == 1
@@ -165,9 +201,12 @@ def test_cleanup_fidel_extracted_creates_filtered_snapshot_and_copy(tmp_path: Pa
         encoding="utf-8",
     )
 
-    summary = cleanup_fidel_extracted(
-        extracted_root=extracted_root,
-        output_root=tmp_path / "cleaned_fidel",
+    summary = cast(
+        _FidelCleanupSummary,
+        cleanup_fidel_extracted(
+            extracted_root=extracted_root,
+            output_root=tmp_path / "cleaned_fidel",
+        ),
     )
 
     cleaned_snapshot = (
@@ -203,9 +242,12 @@ def test_verify_surya_dataset_emits_review_artifacts(tmp_path: Path):
         [{"image": str(holdout_img), "text": "holdout"}],
     )
 
-    summary = verify_surya_dataset(
-        dataset_dir=dataset_dir,
-        output_dir=tmp_path / "verify",
+    summary = cast(
+        _SuryaVerifySummary,
+        verify_surya_dataset(
+            dataset_dir=dataset_dir,
+            output_dir=tmp_path / "verify",
+        ),
     )
 
     assert summary["confirmed_blank_rows"] == 1

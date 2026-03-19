@@ -109,6 +109,7 @@ Each command has its own isolated help menu:
 ```bash
 python berana.py layout-diagnostics --help
 python berana.py ocr --help
+python berana.py ocr-benchmark --help
 ```
 
 2. **Pipeline (Future):** The "Gold Standard" execution. Chains Ingest ➡️ Translation.
@@ -179,7 +180,7 @@ Berana includes multiple HITL tools for layout verification and refinement:
    - Picks up where Label Studio leaves off. A local web app for adjusting divider lines on a per-page basis to get perfect column dividers and layout masks.
    - Uses a "Line of Best Fit" vector engine to correct for manuscript tilt.
    - Stores verified geometry in `input/layout_dataset/hitl_line_editor.sqlite3`.
-   > Read more: [HITL Line Editor Research Doc](docs/research/hitl_methodology.md) | [HITL Line Editor ReadME](t and Usage:ools/hitl_line_editor_app/README.md)
+   > Read more: [HITL Line Editor Research Doc](docs/research/hitl_methodology.md) | [HITL Line Editor ReadME](tools/hitl_line_editor_app/README.md)
    - Imports the YOLO export ZIP file from Label Studio and allows the user to adjust the divider lines on a per-page basis to get perfect column dividers and layout masks.
    ```bash
    # Start the local isolated SQLite verification server
@@ -207,12 +208,44 @@ python berana.py crop-columns --pdf-path input/raw_pdfs/manuscript.pdf
 ```
 *(Produces `output/column_crops/<doc>_vNN/data/cropping_manifest.json`, `output/column_crops/<doc>_vNN/data/quality_report.json`, and per-page spliced images in `output/column_crops/<doc>_vNN/visuals/spliced/`.)*
 
-### Phase 4: OCR (Scaffold)
+### Phase 4: OCR (Active)
 
 ```bash
-# OCR stage command scaffold (manifest-only until recognition implementation lands)
-python berana.py ocr --pdf-path input/raw_pdfs/manuscript.pdf
+# Generic OCR on a PDF or image source
+python berana.py ocr --source input/raw_pdfs/manuscript.pdf --zero-shot
 ```
+
+```bash
+# OCR using a Surya finetune run or checkpoint
+python berana.py ocr \
+  --source input/raw_pdfs/manuscript.pdf \
+  --checkpoint-dir output/ocr_training_runs/<run_or_checkpoint_dir>
+```
+
+Current behavior:
+
+- `ocr` is now a real inference command, not a manifest scaffold
+- `--source` accepts PDFs or single images
+- page selection is handled through `--pages "1-5,7,10-44"`
+- `--diagnose` writes annotated OCR-box visualizations for the exact boxes used during recognition
+- for PDFs that already have prepared crop-layout artifacts, the OCR path can automatically reuse those specialized assets
+
+### Phase 5: OCR Training & Evaluation (Active)
+
+The Surya training stack now lives as a dedicated toolchain under `tools/ocr_training.py`.
+
+Primary docs:
+
+- training workflow overview: [tools/ocr_training/README.md](tools/ocr_training/README.md)
+- setup and end-to-end command guide: [tools/ocr_training/setup.md](tools/ocr_training/setup.md)
+
+Primary capabilities:
+
+- FIDEL extraction, cleanup, dataset build, and verification
+- manual or auto-planned Surya finetuning
+- authoritative checkpoint CER/WER evaluation
+- explicit eval benchmarking
+- standalone OCR inference using base or finetuned Surya checkpoints
 
 ## 9. Run Registry & Versioning
 
@@ -229,8 +262,8 @@ This provides reproducibility (immutable run history) and simple stage chaining 
 | `layout-infer` | `output/layout_inference/` | `<doc>_vNN/` | `data/auto_labels_tasks.json`, `visuals/page_XXX.jpg` | `layout-infer` |
 | `layout-diagnostics` | `output/layout_diagnostics/` | `<doc>_vNN/` | `visuals/visual_overlays/*.jpg` | `layout-diagnostics` |
 | `crop-columns` | `output/column_crops/` | `<doc>_vNN/` | `output/column_crops/<doc>_vNN/data/cropping_manifest.json`, `output/column_crops/<doc>_vNN/data/quality_report.json`, `output/column_crops/<doc>_vNN/visuals/spliced/page_XXX/*.png` | `crop-columns` |
-| `ocr` (scaffold) | `output/ocr_runs/inference/` | `<doc>_vNN/` | `data/inference_manifest.json` | `ocr` |
-| `ocr-train` (scaffold) | `output/ocr_runs/training/` | `<doc>_vNN/` | `data/training_manifest.json` | `ocr-train` |
+| `ocr` | `output/ocr_runs/inference/` | `<doc>_vNN/` | `page_XXX.txt`, diagnostic overlays under `images/` when enabled | `ocr` |
+| `ocr-benchmark` | `output/ocr_benchmark/` | document- and stage-specific | prep/eval/coverage artifacts under benchmark run dirs | `ocr-benchmark-*` |
 
 Notes:
 - Stage commands consume upstream artifacts through the latest-pointer registry to avoid brittle manual path passing.
@@ -267,6 +300,7 @@ Our `berana_yolov8_divider_v13.pt` small-segmenter (11.7M params) was achieved v
 > - HITL verification workflow: [tools/hitl_line_editor_app/README.md](tools/hitl_line_editor_app/README.md)
 > - HITL SQLite-driven finetuner path: [tools/hitl_yolo_finetuner_app/README.md](tools/hitl_yolo_finetuner_app/README.md)
 > - FIDEL extraction + Surya training tool: [tools/ocr_training/README.md](tools/ocr_training/README.md)
+> - OCR training setup guide and canonical command reference: [tools/ocr_training/setup.md](tools/ocr_training/setup.md)
 
 **Validation Results (Mask Level):**
 *   **Mask mAP50:** `0.946`

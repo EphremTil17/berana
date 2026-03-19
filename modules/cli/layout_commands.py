@@ -1,4 +1,5 @@
 import json
+import logging
 import statistics
 from collections import deque
 from pathlib import Path
@@ -41,7 +42,7 @@ def run_layout_prep(
     meta_dir = run_dir / "meta"
     meta_dir.mkdir(parents=True, exist_ok=True)
 
-    get_logger("PDFtoImage").setLevel("WARNING")
+    get_logger("PDFtoImage").setLevel(logging.WARNING)
     log.info("Preparing page images for layout-prep...")
     try:
         exported_count = export_images_for_labeling(
@@ -80,7 +81,7 @@ def run_train_layout(
     imgsz: int = typer.Option(1024, "--imgsz"),
 ) -> None:
     """Fine-tune YOLOv8-small on the 3060 Ti using the labeled dataset."""
-    from ultralytics import YOLO
+    from ultralytics import YOLO  # type: ignore[attr-defined]
 
     log.info(f"Starting YOLOv8-small training on {data_yaml}...")
     model = YOLO("yolov8s-seg.pt")
@@ -142,8 +143,8 @@ def run_layout_infer(
     )  # yield_pdf_pages is 1-indexed and inclusive
 
     if not verbose:
-        get_logger("YOLOEngine").setLevel("INFO")
-        get_logger("PDFtoImage").setLevel("WARNING")
+        get_logger("YOLOEngine").setLevel(logging.INFO)
+        get_logger("PDFtoImage").setLevel(logging.WARNING)
 
     engine = LayoutSegmentationEngine()
     if engine.model is None:

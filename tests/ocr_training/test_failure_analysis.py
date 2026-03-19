@@ -3,7 +3,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from modules.ocr_training.failure_analysis import analyze_predictions_failures
+from modules.ocr_training.failure_analysis import (
+    FailureAnalysisSummary,
+    analyze_predictions_failures,
+)
 from modules.ocr_training.surya_debug import BLANK_SIGNATURE_SIZE
 
 
@@ -74,7 +77,7 @@ def test_analyze_predictions_failures_writes_exact_false_bundle(tmp_path: Path):
         ],
     )
 
-    summary = analyze_predictions_failures(
+    summary: FailureAnalysisSummary = analyze_predictions_failures(
         predictions_path=predictions_path,
         output_dir=tmp_path / "analysis",
     )

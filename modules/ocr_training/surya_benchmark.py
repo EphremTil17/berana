@@ -211,7 +211,7 @@ def _select_benchmark_winner(
         if result.status == "completed" and result.samples_per_second is not None
     ]
     winner = (
-        max(valid_results, key=lambda result: float(result.samples_per_second))
+        max(valid_results, key=lambda result: float(result.samples_per_second))  # type: ignore[arg-type]
         if valid_results
         else None
     )

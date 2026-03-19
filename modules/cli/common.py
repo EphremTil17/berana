@@ -34,7 +34,7 @@ def parse_page_selection(pages: str | None) -> list[int]:
     return sorted(set(parsed))
 
 
-def ensure_pdf_exists(pdf_path: str, context_label: str) -> Path:
+def ensure_pdf_exists(pdf_path: str | Path, context_label: str) -> Path:
     """Validate source PDF exists and return normalized path."""
     source_path = Path(pdf_path)
     if not source_path.exists():

@@ -7,8 +7,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -16,7 +17,14 @@ from modules.ocr_training.adapters.berana_gold import validate_berana_gold_input
 from modules.ocr_training.distributed.context import torchrun_is_active
 from modules.ocr_training.fidel_cleanup import cleanup_fidel_extracted
 from modules.ocr_training.fidel_extract import extract_fidel
-from modules.ocr_training.schemas import SplitConfig, SuryaTrainConfig, TrainMode
+from modules.ocr_training.runtime.strategy_catalog import resolve_strategy_allowlist
+from modules.ocr_training.schemas import (
+    ExecutionBackend,
+    FinetuneStrategy,
+    SplitConfig,
+    SuryaTrainConfig,
+    TrainMode,
+)
 from modules.ocr_training.surya_benchmark import benchmark_surya_eval
 from modules.ocr_training.surya_cleanup import verify_surya_dataset
 from modules.ocr_training.surya_dataset import build_surya_dataset
@@ -37,6 +45,11 @@ log = get_logger("OCRTrainingCLI")
 
 def _csv_to_set(values: str) -> set[str]:
     return {item.strip().lower() for item in values.split(",") if item.strip()}
+
+
+def _csv_to_strategy_allowlist(values: str) -> list[FinetuneStrategy]:
+    tokens = [item.strip().lower() for item in values.split(",") if item.strip()]
+    return resolve_strategy_allowlist(tokens)
 
 
 def _csv_to_int_list(values: str) -> list[int]:
@@ -125,6 +138,21 @@ def _normalize_metric_selector(value: str) -> str:
         return mapping[normalized]
     except KeyError as exc:
         raise typer.BadParameter("--metric must be one of: cer, wer, latest") from exc
+
+
+def _resolve_execution_backend(value: str) -> ExecutionBackend:
+    return ExecutionBackend(value.strip().lower())
+
+
+def _resolve_cli_finetune_strategy(value: str | None) -> FinetuneStrategy | None:
+    if value is None:
+        return None
+    return FinetuneStrategy(value.strip().lower())
+
+
+def _summary_modalities(summary: Mapping[str, object]) -> Mapping[str, object]:
+    modalities = summary.get("modalities")
+    return modalities if isinstance(modalities, dict) else {}
 
 
 def _cli_is_rank_zero() -> bool:
@@ -663,7 +691,9 @@ def cli_train_surya(
         normalized_mode = TrainMode(mode.strip().lower())
     except ValueError as exc:
         raise typer.BadParameter("--mode must be one of: auto, manual") from exc
-    if normalized_mode == TrainMode.AUTO and finetune_strategy == "full":
+    normalized_execution_backend = _resolve_execution_backend(execution_backend)
+    normalized_finetune_strategy = _resolve_cli_finetune_strategy(finetune_strategy)
+    if normalized_mode == TrainMode.AUTO and normalized_finetune_strategy == FinetuneStrategy.FULL:
         raise typer.BadParameter("`full` finetuning is manual-only. Use `--mode manual`.")
     if normalized_mode == TrainMode.AUTO and _cli_is_rank_zero():
         log.info(
@@ -691,14 +721,14 @@ def cli_train_surya(
         eval_max_rows=eval_max_rows,
         planning_budget_minutes=planning_budget_minutes,
         target_vram_utilization=target_vram_utilization,
-        strategy_allowlist=strategy_allowlist,
+        strategy_allowlist=_csv_to_strategy_allowlist(strategy_allowlist),
         max_replans=max_replans,
-        execution_backend=execution_backend,
+        execution_backend=normalized_execution_backend,
         ddp_backend=ddp_backend,
         per_device_train_batch_size=per_device_train_batch_size,
         per_device_eval_batch_size=per_device_eval_batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
-        finetune_strategy=finetune_strategy,
+        finetune_strategy=normalized_finetune_strategy,
         lora_rank=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
@@ -709,7 +739,7 @@ def cli_train_surya(
         fp16=fp16,
         gradient_checkpointing=gradient_checkpointing,
         max_sequence_length=max_sequence_length,
-        num_train_epochs=num_train_epochs,
+        num_train_epochs=int(num_train_epochs),
         learning_rate=learning_rate,
         eval_save_steps=eval_save_steps,
         logging_steps=logging_steps,
@@ -969,10 +999,11 @@ def cli_evaluate_surya_modalities(
 
     if summary.get("status") == "completed_nonzero_rank":
         return
+    modalities_summary = _summary_modalities(summary)
     log.info(
         "evaluate-surya-modalities complete split=%s modalities=%s",
         split,
-        ",".join(sorted(summary["modalities"])),
+        ",".join(sorted(modalities_summary.keys())),
     )
 
 
@@ -1033,7 +1064,7 @@ def cli_benchmark_surya_eval(
             "--candidate-eval-batch-sizes",
             help="Required comma-separated eval batch sizes to sweep, for example 4,8,12,16.",
         ),
-    ] = ...,
+    ] = "",
     candidate_worker_counts: Annotated[
         str | None,
         typer.Option(
@@ -1139,7 +1170,7 @@ def cli_debug_surya_predictions(
     """Extract exact-false rows, copy their images, and run a robust blank-image audit."""
     resolved_output_dir = output_dir or predictions_path.parent / f"{predictions_path.stem}_debug"
     try:
-        summary = extract_exact_false_debug_bundle(
+        summary: dict[str, Any] = extract_exact_false_debug_bundle(
             predictions_path=predictions_path,
             output_dir=resolved_output_dir,
         )
@@ -1346,7 +1377,7 @@ def cli_inspect_surya_dataset(
     )
 
     try:
-        result = inspect_surya_dataset(
+        result: dict[str, Any] = inspect_surya_dataset(
             dataset_dir=dataset_dir,
             split=normalized_split,
             sample_size=sample_size,

@@ -206,11 +206,11 @@ def build_preprocess_logits_for_metrics():
         if isinstance(logits, tuple):
             logits = logits[0]
         dim = getattr(logits, "dim", None)
-        if callable(dim) and int(dim()) >= 3:
+        if callable(dim) and int(dim()) >= 3:  # type: ignore[call-overload]
             return logits.argmax(dim=-1)
         ndim = getattr(logits, "ndim", None)
-        if ndim is not None and int(ndim) >= 3:
-            return np.argmax(logits, axis=-1)
+        if ndim is not None and int(ndim) >= 3:  # type: ignore[call-overload]
+            return np.argmax(logits, axis=-1)  # type: ignore[no-any-return]
         return logits
 
     return preprocess_logits_for_metrics

@@ -18,7 +18,7 @@ class BoundingBox(BaseModel):
     Format: [x1, y1, x2, y2] where (x1, y1) is top-left and (x2, y2) is bottom-right.
     """
 
-    coordinates: conlist(item_type=float, min_length=4, max_length=4) = Field(
+    coordinates: conlist(item_type=float, min_length=4, max_length=4) = Field(  # type: ignore[valid-type]
         ..., description="[x1, y1, x2, y2] coordinates"
     )
 

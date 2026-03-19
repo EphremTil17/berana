@@ -129,9 +129,11 @@ def test_extract_fidel_excludes_handwritten_and_builds_snapshot():
         assert len(typed_files) == 2
         assert len(synthetic_files) == 2
 
+        source_snapshot = result["source_snapshot"]
+        assert isinstance(source_snapshot, Path)
         snapshot_rows = [
             json.loads(line)
-            for line in result["source_snapshot"].read_text(encoding="utf-8").splitlines()
+            for line in source_snapshot.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
         excluded_rows = [row for row in snapshot_rows if row["excluded"]]
@@ -580,7 +582,9 @@ def test_cleanup_fidel_excludes_rows_from_heuristic_cleanup_dir():
         )
 
         assert summary["heuristic_excluded_rows"] == 1
-        assert summary["heuristic_excluded_rows_by_category"]["likely_label_mismatch"] == 1
+        heuristic_by_category = summary["heuristic_excluded_rows_by_category"]
+        assert isinstance(heuristic_by_category, dict)
+        assert heuristic_by_category["likely_label_mismatch"] == 1
 
         cleaned_snapshot = (
             output_root / "manifests" / "source_snapshots" / "fidel_sources.jsonl"

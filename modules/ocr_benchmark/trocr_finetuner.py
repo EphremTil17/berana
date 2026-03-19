@@ -77,14 +77,14 @@ def initialize_trocr_ethiopic() -> tuple[VisionEncoderDecoderModel, PreTrainedTo
     model = VisionEncoderDecoderModel.from_pretrained(TROCR_STAGE1_CHECKPOINT)
 
     logger.info("Resizing TrOCR decoder embeddings to XLM-R vocab size=%d...", len(tokenizer))
-    model.decoder.resize_token_embeddings(len(tokenizer))
+    model.decoder.resize_token_embeddings(len(tokenizer))  # type: ignore[reportOptionalMemberAccess]
 
-    model.config.decoder_start_token_id = tokenizer.bos_token_id
-    model.config.pad_token_id = tokenizer.pad_token_id
-    model.config.eos_token_id = tokenizer.eos_token_id
-    model.config.vocab_size = model.config.decoder.vocab_size
+    model.config.decoder_start_token_id = tokenizer.bos_token_id  # type: ignore[reportAttributeAccessIssue]
+    model.config.pad_token_id = tokenizer.pad_token_id  # type: ignore[reportAttributeAccessIssue]
+    model.config.eos_token_id = tokenizer.eos_token_id  # type: ignore[reportAttributeAccessIssue]
+    model.config.vocab_size = model.config.decoder.vocab_size  # type: ignore[reportOptionalMemberAccess]
 
-    return model, tokenizer
+    return model, tokenizer  # type: ignore[reportReturnType]
 
 
 class OCRLineDataset(Dataset):
@@ -113,7 +113,7 @@ class OCRLineDataset(Dataset):
         row = self.rows[idx]
         image_path = settings.BASE_DIR / row.image_path
         image = Image.open(image_path).convert("RGB")
-        pixel_values = self.processor(images=image, return_tensors="pt").pixel_values.squeeze(0)
+        pixel_values = self.processor(images=image, return_tensors="pt").pixel_values.squeeze(0)  # type: ignore[reportCallIssue]
 
         prompt = row.lang_prompt.value
         target_text = f"{prompt} {row.gt_text}"
@@ -124,7 +124,7 @@ class OCRLineDataset(Dataset):
             truncation=True,
             return_tensors="pt",
         )
-        labels = tokenized["input_ids"].squeeze(0)
+        labels = tokenized["input_ids"].squeeze(0)  # type: ignore[reportAttributeAccessIssue]
         return {"pixel_values": pixel_values, "labels": labels}
 
 
@@ -168,7 +168,7 @@ def run_trocr_finetune(
 
     model, tokenizer = initialize_trocr_ethiopic()
     processor = TrOCRProcessor.from_pretrained(TROCR_STAGE1_CHECKPOINT)
-    processor.tokenizer = tokenizer
+    processor.tokenizer = tokenizer  # type: ignore[reportAttributeAccessIssue]
 
     charset_cfg = charset_config_path or (
         settings.INPUT_DIR / "ocr_benchmark" / "config" / "ethiopic_charset.v1.json"
@@ -192,7 +192,7 @@ def run_trocr_finetune(
         raise ValueError(f"No train rows with non-empty gt_text found for doc_stem '{doc_stem}'.")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    model = model.to(device)  # type: ignore[reportArgumentType]
     model.train()
 
     train_dataset = OCRLineDataset(
@@ -205,7 +205,7 @@ def run_trocr_finetune(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        collate_fn=lambda b: _collate_batch(b, tokenizer.pad_token_id),
+        collate_fn=lambda b: _collate_batch(b, tokenizer.pad_token_id),  # type: ignore[reportArgumentType]
     )
 
     total_steps = max(1, len(train_loader) * epochs)
@@ -271,8 +271,8 @@ def run_trocr_finetune(
     for row in holdout_rows:
         image_path = settings.BASE_DIR / row.image_path
         image = Image.open(image_path).convert("RGB")
-        pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
-        forced_id = tokenizer.convert_tokens_to_ids(row.lang_prompt.value)
+        pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)  # type: ignore[reportCallIssue]
+        forced_id = tokenizer.convert_tokens_to_ids(row.lang_prompt.value)  # type: ignore[reportCallIssue]
         with torch.no_grad():
             generated_ids = model.generate(
                 pixel_values,
@@ -280,7 +280,7 @@ def run_trocr_finetune(
                 do_sample=False,
                 forced_bos_token_id=forced_id,
             )
-        raw_pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        raw_pred = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]  # type: ignore[reportArgumentType]
         pred_text = _sanitize_prediction_text(raw_pred)
         predictions.append(
             {

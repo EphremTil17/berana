@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from statistics import mean
-from typing import Any
+from typing import Any, TypedDict
 
 from tqdm import tqdm
 
@@ -340,6 +340,19 @@ def evaluate_surya_checkpoint(
     )
 
 
+class EvaluateSuryaModalitiesSummary(TypedDict):
+    """Return type for evaluate_surya_modalities."""
+
+    split: str
+    modalities: dict[str, Any]
+    status: str
+    seed: int
+    eval_fraction: float
+    max_rows: int | None
+    eval_batch_size: int
+    dataloader_num_workers: int
+
+
 def evaluate_surya_modalities(
     *,
     run_key: str,
@@ -357,7 +370,7 @@ def evaluate_surya_modalities(
     distributed_context=None,
     torch_module=None,
     output_dir: Path | None = None,
-) -> dict[str, Any]:
+) -> EvaluateSuryaModalitiesSummary:
     """Evaluate one checkpoint separately across requested typed/synthetic modalities."""
     modality_summaries: dict[str, Any] = {}
     for modality in modalities:
@@ -383,12 +396,18 @@ def evaluate_surya_modalities(
             "split": split,
             "modalities": modality_summaries,
             "status": "completed_nonzero_rank",
+            "seed": seed,
+            "eval_fraction": eval_fraction,
+            "max_rows": max_rows,
+            "eval_batch_size": eval_batch_size,
+            "dataloader_num_workers": dataloader_num_workers,
         }
     eval_dir = output_dir or (run_dir / "tool_evaluation")
     combined_summary_path = eval_dir / f"summary_{split}_modalities.json"
-    combined_payload = {
+    combined_payload: EvaluateSuryaModalitiesSummary = {
         "split": split,
         "modalities": modality_summaries,
+        "status": "completed",
         "seed": seed,
         "eval_fraction": eval_fraction,
         "max_rows": max_rows,

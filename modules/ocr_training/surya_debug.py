@@ -3,14 +3,61 @@ from __future__ import annotations
 import json
 import shutil
 from collections import Counter
+from collections.abc import Mapping
 from pathlib import Path
 from statistics import fmean
+from typing import TypedDict
 
 import cv2
 import numpy as np
 from PIL import Image
 
 BLANK_SIGNATURE_SIZE = (2385, 244)
+
+
+class BlankImageFeatures(TypedDict):
+    """Low-level structural features extracted from one grayscale image."""
+
+    mean_pixel: float
+    std_pixel: float
+    min_pixel: int
+    max_pixel: int
+    dynamic_range: int
+    foreground_ratio: float
+    component_count: int
+    max_component_ratio: float
+    edge_density: float
+    row_activity_ratio: float
+    col_activity_ratio: float
+    row_run_count: int
+    col_run_count: int
+
+
+class ScoredBlankAudit(BlankImageFeatures):
+    """Blank-image score and classification before image-level metadata is added."""
+
+    classification: str
+    structural_classification: str
+    blank_score: int
+    blank_reasons: list[str]
+
+
+class BlankClassificationAudit(ScoredBlankAudit):
+    """Final blankness audit payload emitted for one image."""
+
+    image_width: int
+    image_height: int
+    resolution_signature_match: bool
+    structural_confirmed_blank: bool
+    structural_suspect_blank: bool
+
+
+class PredictionMetricsRow(TypedDict):
+    """Minimal metric fields required for debug summaries."""
+
+    cer: float
+    wer: float
+    exact: bool
 
 
 def _read_predictions(path: Path) -> list[dict[str, object]]:
@@ -61,7 +108,7 @@ def _projection_runs(profile: np.ndarray, *, floor: float) -> int:
     return int(starts.size)
 
 
-def _extract_blank_features(gray: np.ndarray) -> dict[str, float | int]:
+def _extract_blank_features(gray: np.ndarray) -> BlankImageFeatures:
     """Extract low-level image features used for blank-image scoring."""
     height, width = gray.shape
     total_pixels = float(height * width)
@@ -123,7 +170,7 @@ def _apply_score(
     return running_score
 
 
-def _score_blank_features(features: dict[str, float | int]) -> tuple[int, list[str]]:
+def _score_blank_features(features: BlankImageFeatures) -> tuple[int, list[str]]:
     """Convert extracted image features into one blankness score and reason set."""
     score = 0
     reasons: list[str] = []
@@ -222,7 +269,7 @@ def _score_blank_features(features: dict[str, float | int]) -> tuple[int, list[s
     return score, reasons
 
 
-def _classify_blank_like(gray: np.ndarray) -> dict[str, object]:
+def _classify_blank_like(gray: np.ndarray) -> ScoredBlankAudit:
     """Score one image for blankness using multiple structural features."""
     features = _extract_blank_features(gray)
     score, reasons = _score_blank_features(features)
@@ -234,22 +281,55 @@ def _classify_blank_like(gray: np.ndarray) -> dict[str, object]:
     else:
         classification = "text_present"
 
-    return {
+    audit: ScoredBlankAudit = {
         "classification": classification,
         "structural_classification": classification,
         "blank_score": score,
         "blank_reasons": reasons,
-        **features,
+        "mean_pixel": features["mean_pixel"],
+        "std_pixel": features["std_pixel"],
+        "min_pixel": features["min_pixel"],
+        "max_pixel": features["max_pixel"],
+        "dynamic_range": features["dynamic_range"],
+        "foreground_ratio": features["foreground_ratio"],
+        "component_count": features["component_count"],
+        "max_component_ratio": features["max_component_ratio"],
+        "edge_density": features["edge_density"],
+        "row_activity_ratio": features["row_activity_ratio"],
+        "col_activity_ratio": features["col_activity_ratio"],
+        "row_run_count": features["row_run_count"],
+        "col_run_count": features["col_run_count"],
     }
+    return audit
 
 
-def audit_image_blankness(image_path: Path) -> dict[str, object]:
+def _read_blank_reasons(audit: Mapping[str, object]) -> list[str]:
+    value = audit.get("blank_reasons", [])
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        return []
+    return list(value)
+
+
+def _prediction_metrics_row(row: Mapping[str, object]) -> PredictionMetricsRow:
+    cer = row.get("cer")
+    wer = row.get("wer")
+    exact = row.get("exact")
+    if isinstance(cer, bool) or not isinstance(cer, (int, float)):
+        raise TypeError("Prediction row field 'cer' must be numeric.")
+    if isinstance(wer, bool) or not isinstance(wer, (int, float)):
+        raise TypeError("Prediction row field 'wer' must be numeric.")
+    if not isinstance(exact, bool):
+        raise TypeError("Prediction row field 'exact' must be boolean.")
+    return {"cer": float(cer), "wer": float(wer), "exact": exact}
+
+
+def audit_image_blankness(image_path: Path) -> BlankClassificationAudit:
     """Audit one image using independent structural and resolution-signature passes."""
     gray = _load_grayscale(image_path)
     width, height = _load_image_size(image_path)
     audit = _classify_blank_like(gray)
     resolution_signature_match = (width, height) == BLANK_SIGNATURE_SIZE
-    reasons = list(audit["blank_reasons"])
+    reasons = _read_blank_reasons(audit)
     if resolution_signature_match:
         reasons.append("matched_blank_signature_resolution")
 
@@ -267,9 +347,23 @@ def audit_image_blankness(image_path: Path) -> dict[str, object]:
         classification = "text_present"
 
     return {
-        **audit,
         "classification": classification,
+        "structural_classification": audit["structural_classification"],
+        "blank_score": audit["blank_score"],
         "blank_reasons": reasons,
+        "mean_pixel": audit["mean_pixel"],
+        "std_pixel": audit["std_pixel"],
+        "min_pixel": audit["min_pixel"],
+        "max_pixel": audit["max_pixel"],
+        "dynamic_range": audit["dynamic_range"],
+        "foreground_ratio": audit["foreground_ratio"],
+        "component_count": audit["component_count"],
+        "max_component_ratio": audit["max_component_ratio"],
+        "edge_density": audit["edge_density"],
+        "row_activity_ratio": audit["row_activity_ratio"],
+        "col_activity_ratio": audit["col_activity_ratio"],
+        "row_run_count": audit["row_run_count"],
+        "col_run_count": audit["col_run_count"],
         "image_width": width,
         "image_height": height,
         "resolution_signature_match": resolution_signature_match,
@@ -295,11 +389,12 @@ def _summarize(rows: list[dict[str, object]]) -> dict[str, object]:
             "mean_wer": None,
             "exact_rate": None,
         }
+    metric_rows = [_prediction_metrics_row(row) for row in rows]
     return {
         "num_rows": len(rows),
-        "mean_cer": fmean(float(row["cer"]) for row in rows),
-        "mean_wer": fmean(float(row["wer"]) for row in rows),
-        "exact_rate": fmean(1.0 if bool(row["exact"]) else 0.0 for row in rows),
+        "mean_cer": fmean(row["cer"] for row in metric_rows),
+        "mean_wer": fmean(row["wer"] for row in metric_rows),
+        "exact_rate": fmean(1.0 if row["exact"] else 0.0 for row in metric_rows),
     }
 
 

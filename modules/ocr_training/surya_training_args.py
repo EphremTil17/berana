@@ -83,8 +83,12 @@ def build_training_arguments(
     effective_eval_steps = None
     effective_save_steps = None
     if eval_enabled:
+        # When eval_enabled is True, eval_steps must have a value
+        eval_steps_value = candidate.eval_steps
+        if eval_steps_value is None:
+            raise ValueError("eval_steps must be set when eval_enabled is True")
         effective_eval_steps, effective_save_steps = resolve_eval_save_steps(
-            eval_save_steps=int(candidate.eval_steps),
+            eval_save_steps=eval_steps_value,
             logger=logger,
         )
     elif save_enabled:

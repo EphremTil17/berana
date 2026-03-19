@@ -122,7 +122,7 @@ def test_build_training_candidates_respects_auto_constraints():
         gradient_accumulation_steps=4,
         dataloader_num_workers=8,
         max_sequence_length=896,
-        strategy_allowlist="qlora,lora",
+        strategy_allowlist=[FinetuneStrategy.QLORA, FinetuneStrategy.LORA],
     )
 
     constraints = derive_auto_constraints(config, profile)

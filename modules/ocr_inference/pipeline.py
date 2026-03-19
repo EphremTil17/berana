@@ -70,11 +70,12 @@ def _chunk_iterable(items, batch_size: int):
         yield chunk
 
 
-def _normalize_bbox(value) -> list[float] | None:
+def _normalize_bbox(value: object | None) -> list[float] | None:
     if value is None:
         return None
-    if hasattr(value, "bbox"):
-        return _normalize_bbox(value.bbox)
+    bbox_value = getattr(value, "bbox", None)
+    if bbox_value is not None:
+        return _normalize_bbox(bbox_value)
     if isinstance(value, (list, tuple)) and len(value) == 4:
         try:
             return [float(item) for item in value]
@@ -88,8 +89,8 @@ def _draw_line_annotations(image: Image.Image, annotations: list[dict[str, objec
     draw = ImageDraw.Draw(annotated)
     font = ImageFont.load_default()
     for index, annotation in enumerate(annotations):
-        bbox = annotation.get("bbox")
-        if not bbox:
+        bbox = _normalize_bbox(annotation.get("bbox"))
+        if bbox is None:
             continue
         x1, y1, x2, y2 = [round(v) for v in bbox]
         draw.rectangle((x1, y1, x2, y2), outline="#ff3b30", width=3)

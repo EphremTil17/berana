@@ -1,9 +1,14 @@
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 from modules.ocr_training import surya_train
 from modules.ocr_training.distributed.context import DistributedContext
-from modules.ocr_training.schemas import SuryaTrainConfig, TrainMode
+from modules.ocr_training.schemas import ExecutionBackend, SuryaTrainConfig, TrainMode
+from modules.ocr_training.surya_eval import EvaluateSuryaModalitiesSummary
+
+if TYPE_CHECKING:
+    from modules.ocr_training.schemas import TrainingCandidate
 
 
 def test_evaluate_surya_checkpoint_wrapper_forwards_extended_eval_args(monkeypatch):
@@ -56,7 +61,7 @@ def test_evaluate_surya_modalities_wrapper_forwards_modalities(monkeypatch):
         "modules.ocr_training.surya_train._evaluate_surya_modalities", _capture_eval
     )
 
-    summary = surya_train.evaluate_surya_modalities(
+    summary: EvaluateSuryaModalitiesSummary = surya_train.evaluate_surya_modalities(
         run_key="fidel_typed_synthetic",
         run_dir=Path("/tmp/run"),
         dataset_dir=Path("/tmp/dataset"),
@@ -144,7 +149,7 @@ def test_run_surya_finetune_barriers_before_destroy_on_interrupt(monkeypatch, tm
         run_key="run",
         dataset_dir=tmp_path / "dataset",
         output_dir=tmp_path / "output",
-        config=SuryaTrainConfig(mode=TrainMode.MANUAL, execution_backend="ddp"),
+        config=SuryaTrainConfig(mode=TrainMode.MANUAL, execution_backend=ExecutionBackend.DDP),
     )
 
     assert result["status"] == "interrupted"
@@ -332,7 +337,7 @@ def test_authoritative_eval_runner_forwards_dataloader_workers(monkeypatch, tmp_
         run_key="run",
         output_dir=tmp_path / "run",
         config=config,
-        candidate=candidate,
+        candidate=cast("TrainingCandidate", candidate),
         base_checkpoint="checkpoint",
         train_rows=[{"image": "a", "text": "x"}],
         val_rows=[{"image": "b", "text": "y"}],
@@ -350,9 +355,12 @@ def test_authoritative_eval_runner_forwards_dataloader_workers(monkeypatch, tmp_
     )
 
     authoritative_runner = captured["authoritative_eval_runner"]
+    assert callable(authoritative_runner)
     authoritative_runner(
         checkpoint_path=tmp_path / "run" / "checkpoint-200",
         state=SimpleNamespace(global_step=200),
     )
 
-    assert captured["eval_kwargs"]["dataloader_num_workers"] == 0
+    eval_kwargs = captured["eval_kwargs"]
+    assert isinstance(eval_kwargs, dict)
+    assert eval_kwargs["dataloader_num_workers"] == 0

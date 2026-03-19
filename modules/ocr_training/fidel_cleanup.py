@@ -9,9 +9,12 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-from modules.ocr_training.failure_analysis import load_heuristic_exclusion_index
+from modules.ocr_training.failure_analysis import (
+    HeuristicExclusionIndex,
+    load_heuristic_exclusion_index,
+)
 from modules.ocr_training.schemas import SourceSnapshotRow
-from modules.ocr_training.surya_debug import audit_image_blankness
+from modules.ocr_training.surya_debug import BlankClassificationAudit, audit_image_blankness
 
 
 def _snapshot_path_from_extracted_root(extracted_root: Path) -> Path:
@@ -81,7 +84,7 @@ def _resolve_snapshot_image(path_str: str) -> Path:
     return (Path.cwd() / path).resolve()
 
 
-def _audit_image_path(image_path: Path) -> dict[str, object]:
+def _audit_image_path(image_path: Path) -> BlankClassificationAudit:
     """Run one blank-image audit for a resolved source image path."""
     return audit_image_blankness(image_path)
 
@@ -243,7 +246,7 @@ def cleanup_fidel_extracted(
     heuristic_excluded_rows = 0
     normalized_workers = max(1, int(workers))
     auditable_rows: list[tuple[SourceSnapshotRow, Path]] = []
-    heuristic_index = (
+    heuristic_index: HeuristicExclusionIndex | None = (
         load_heuristic_exclusion_index(heuristic_cleanup_dir)
         if heuristic_cleanup_dir is not None
         else None
@@ -260,6 +263,7 @@ def cleanup_fidel_extracted(
         auditable_rows=auditable_rows,
         workers=normalized_workers,
     )
+    executor: ThreadPoolExecutor | None = executor
 
     progress = tqdm(
         auditable_rows,
@@ -336,7 +340,7 @@ def cleanup_fidel_extracted(
             )
     finally:
         progress.close()
-        if normalized_workers != 1:
+        if normalized_workers != 1 and executor is not None:
             executor.shutdown(wait=True)
 
     _write_snapshot_rows(

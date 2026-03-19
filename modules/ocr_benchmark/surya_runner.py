@@ -160,7 +160,7 @@ def run_zero_shot_baseline(doc_stem: str, split: str = "all") -> Path:
 def lock_surya_version() -> str:
     """Helper to pin the exact Surya version running for finetuning reproducibility."""
     try:
-        return surya.__version__
+        return surya.__version__  # type: ignore[attr-defined]
     except AttributeError:
         from importlib.metadata import version
 

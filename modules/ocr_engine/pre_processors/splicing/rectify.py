@@ -56,29 +56,31 @@ class Rectifier:
         right_bottom_x = Rectifier._x_at_y(right_line, y_bottom)
 
         # Source points based on full-page intersections with divider lines.
-        src_pts = np.float32(
+        src_pts = np.array(  # type: ignore[arg-type]
             [
                 [left_top_x, y_top],
                 [right_top_x, y_top],
                 [right_bottom_x, y_bottom],
                 [left_bottom_x, y_bottom],
-            ]
+            ],
+            dtype=np.float32,
         )
 
         # Destination points enforce vertical, parallel dividers across full page height.
         avg_left_x = (left_top_x + left_bottom_x) / 2.0
         avg_right_x = (right_top_x + right_bottom_x) / 2.0
 
-        dst_pts = np.float32(
+        dst_pts = np.array(  # type: ignore[arg-type]
             [
                 [avg_left_x, y_top],
                 [avg_right_x, y_top],
                 [avg_right_x, y_bottom],
                 [avg_left_x, y_bottom],
-            ]
+            ],
+            dtype=np.float32,
         )
 
-        matrix = cv2.findHomography(src_pts, dst_pts)[0]
+        matrix = cv2.findHomography(src_pts, dst_pts)[0]  # type: ignore[call-overload]
         if matrix is None:
             raise RuntimeError("Failed to compute homography from divider lines.")
         return TransformMatrix(matrix=matrix)

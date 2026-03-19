@@ -35,6 +35,7 @@ from modules.ocr_training.surya_common import (
 from modules.ocr_training.surya_common import (
     resolve_finetune_strategy as _resolve_finetune_strategy,
 )
+from modules.ocr_training.surya_eval import EvaluateSuryaModalitiesSummary
 from modules.ocr_training.surya_eval import evaluate_surya_checkpoint as _evaluate_surya_checkpoint
 from modules.ocr_training.surya_eval import evaluate_surya_modalities as _evaluate_surya_modalities
 from modules.ocr_training.surya_executor import (
@@ -501,10 +502,11 @@ def evaluate_surya_modalities(
     checkpoint_target: str = "best_cer",
     checkpoint_path: Path | None = None,
     output_dir: Path | None = None,
-) -> dict[str, object]:
+) -> EvaluateSuryaModalitiesSummary:
     """Evaluate one run across typed/synthetic modalities using the existing evaluator."""
     runtime = require_surya()
     torch = runtime.get("torch")
+    requested_modalities = modalities or ["typed", "synthetic"]
     if torch is None:
         return _evaluate_surya_modalities(
             run_key=run_key,
@@ -516,7 +518,7 @@ def evaluate_surya_modalities(
             dataloader_num_workers=dataloader_num_workers,
             max_rows=max_rows,
             seed=seed,
-            modalities=modalities or ["typed", "synthetic"],
+            modalities=requested_modalities,
             output_dir=output_dir,
             runtime=runtime,
             load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(
@@ -543,7 +545,7 @@ def evaluate_surya_modalities(
             dataloader_num_workers=dataloader_num_workers,
             max_rows=max_rows,
             seed=seed,
-            modalities=modalities or ["typed", "synthetic"],
+            modalities=requested_modalities,
             output_dir=output_dir,
             runtime=runtime,
             load_surya_eval_predictor=lambda runtime, run_dir: load_surya_eval_predictor(

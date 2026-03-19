@@ -8,7 +8,7 @@ from modules.ocr_training.runtime.hardware_profile import collect_gpu_memory_sna
 from modules.ocr_training.schemas import CandidateResult, CandidateStatus, TrainingCandidate
 
 try:
-    from transformers import TrainerCallback as _TrainerCallback
+    from transformers import TrainerCallback as _TrainerCallback  # type: ignore[assignment]
 except Exception:  # pragma: no cover - runtime env may not satisfy trainer deps.
 
     class _TrainerCallback:  # type: ignore[too-many-ancestors]

@@ -64,6 +64,22 @@ class LineManifestRow(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @field_validator("column_key", mode="before")
+    @classmethod
+    def normalize_column_key(cls, value: str | ColumnKey) -> ColumnKey:
+        """Normalize column_key from string to enum."""
+        if isinstance(value, ColumnKey):
+            return value
+        return ColumnKey(str(value).strip().lower())
+
+    @field_validator("lang_prompt", mode="before")
+    @classmethod
+    def normalize_lang_prompt(cls, value: str | LangPrompt) -> LangPrompt:
+        """Normalize lang_prompt from string to enum."""
+        if isinstance(value, LangPrompt):
+            return value
+        return LangPrompt(str(value).strip().lower())
+
     @field_validator("image_path")
     @classmethod
     def validate_image_path(cls, v: str) -> str:

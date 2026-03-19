@@ -28,7 +28,7 @@ def require_surya() -> dict[str, Any]:
         from surya.foundation.loader import FoundationModelLoader
         from surya.recognition import RecognitionPredictor
         from transformers import BitsAndBytesConfig, Trainer, TrainerCallback, TrainingArguments
-        from transformers.utils import is_flash_attn_2_available
+        from transformers.utils import is_flash_attn_2_available  # type: ignore[attr-defined]
 
         return {
             "torch": torch,

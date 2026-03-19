@@ -2,6 +2,11 @@
 
 This guide describes how to set up OCR training for the FIDEL typed + synthetic dataset from scratch on this repository.
 
+Related docs:
+
+- OCR training workflow overview: [README.md](./README.md)
+- root project overview: [../../README.md](../../README.md)
+
 It covers the practical path that was needed to get the training stack stable:
 
 - system prerequisites

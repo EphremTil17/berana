@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from schemas.ocr_benchmark import DatasetSplit, LineManifestRow
+from schemas.ocr_benchmark import ColumnKey, DatasetSplit, LangPrompt, LineManifestRow
 
 
 def test_line_manifest_row_valid():
@@ -9,10 +9,10 @@ def test_line_manifest_row_valid():
         line_id="line_001",
         doc_stem="doc_001",
         page_id="page_01",
-        column_key="geez",
-        lang_prompt="<gez>",
+        column_key=ColumnKey.GEEZ,
+        lang_prompt=LangPrompt.GEEZ,
         image_path="output/images/line_001.png",
-        split="train",
+        split=DatasetSplit.TRAIN,
         gt_text="ሀሁሂሃሄህሆ",
         source_run_dir="/some/run/dir",
     )
@@ -30,10 +30,10 @@ def test_image_path_must_be_relative():
             line_id="line_001",
             doc_stem="doc_001",
             page_id="page_01",
-            column_key="geez",
-            lang_prompt="<gez>",
+            column_key=ColumnKey.GEEZ,
+            lang_prompt=LangPrompt.GEEZ,
             image_path="/absolute/path/output/images/line_001.png",
-            split="train",
+            split=DatasetSplit.TRAIN,
             source_run_dir="/some/run/dir",
         )
 
@@ -45,9 +45,9 @@ def test_invalid_schema_version():
             line_id="line_001",
             doc_stem="doc_001",
             page_id="page_01",
-            column_key="geez",
-            lang_prompt="<gez>",
+            column_key=ColumnKey.GEEZ,
+            lang_prompt=LangPrompt.GEEZ,
             image_path="relative.png",
-            split="train",
+            split=DatasetSplit.TRAIN,
             source_run_dir="/some/run/dir",
         )
